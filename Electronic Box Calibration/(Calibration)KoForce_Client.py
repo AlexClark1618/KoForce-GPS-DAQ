@@ -119,11 +119,11 @@ def readData(det):
         lenb = data0[2:4]
         if bytehdr2 == RXM_TM:
             hdr2='RXM_TM'
-            print('1')
+            #print('1')
             #print('\tFound Raw time stamp header: ', bytehdr2)
         elif bytehdr2 == TIM_TM2:
             hdr2='TIM_TM2'
-            print('2')
+            #print('2')
             #print('\tFound Calibrated time stamp header: ', bytehdr2)
 
         leni = int.from_bytes(lenb, "little")
@@ -131,7 +131,7 @@ def readData(det):
         ##print ('buffer ', uart1.any())
 
         while uart1.any() < (leni+2):
-            print('3')
+            #print('3')
             pass
         
         if (bytehdr2 == RXM_TM):
@@ -228,7 +228,7 @@ def readData(det):
                 accEstb=plb[24:28]
                 accEst=int.from_bytes(accEstb,"little")
                 #print('accEst ', accEst, end=end)
-                print('5')
+                #print('5')
                 ##print('\n')
                 
                 #cksum = uart1.read(2)
