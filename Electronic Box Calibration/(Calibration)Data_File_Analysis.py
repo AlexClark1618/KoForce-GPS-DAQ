@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-#Function to read data file (It should probably be general just clea and store all events into tuples)
 def read_data(DATA:'str'):
     '''
     This function reads a provided data file and simply cleans it, strips, and splits it into a 
