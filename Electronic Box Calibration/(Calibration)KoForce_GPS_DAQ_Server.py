@@ -7,28 +7,18 @@ from datetime import datetime
 import gzip
 import shutil
 import time
+import traceback
+
+#Changelog:
+    #9/24/25- Added server auto restart on uncaught errors; Added better error handling from broadcasting; 
+    #Server may have been building up empty sockets leading to the broken pipe errors
 
 HOST = '0.0.0.0'
 PORT = 12345
 
-# Format: 
+# Data Format: 
 PACKET_FORMAT = "!IIIIIIIII"
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
-
-# Create the server socket
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind((HOST, PORT))
-server.listen()
-server.setblocking(False)
-
-print(f"Server listening on {HOST}:{PORT}")
-
-sockets = [server]  # includes all connected sockets
-clients = {}        # map client socket -> {'buffer': bytearray, 'id': int}
-
-connection_log = 'connection_log.txt'
-error_log = 'error_log.txt'
 
 class RotatingFileWriter:
     def __init__(self, base_name="output", ext=".txt", max_size=1024, gzip_files=True, header = ""):
@@ -95,102 +85,120 @@ class RotatingFileWriter:
         if self.file:
             self._close_and_gzip()
 
-HEADER = "Req Code; ID; RF; Cal; Ch, W#; t_ow mil; t_ow submil; Event"
-writer = RotatingFileWriter(base_name="gps_daq", ext=".txt", max_size=1024*1024, header = HEADER)  # 1 MB max
+def run_server():
 
-with open('connection_log.txt', 'w') as log:
-    pass
-with open('error_log.txt', 'w') as log:
-    pass
+    #Info Logs
+    with open(connection_log, 'a') as log:
+        pass
+    with open(error_log, 'a') as log:
+        log.write(f"\n--- Restart at {datetime.now()} ---\n")
 
-try:
-    while True:
-        
-        readable, _, _ = select.select(sockets, [], [], 0.1)
+    # Create the server socket
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, PORT))
+    server.listen()
+    server.setblocking(False)
 
-        for s in readable:
-            if s is server:
-                client_socket, addr = server.accept()
-                client_socket.setblocking(False)
-                sockets.append(client_socket)
-                clients[client_socket] = bytearray()
-                print(f"New ESP32 connected from {addr}")
-                with open('connection_log.txt', 'a') as log:
-                    log.write(f"{time.time()}: Reconnected from {addr}\n")
+    print(f"Server listening on {HOST}:{PORT}")
 
-            else:
+    sockets = [server]  # includes all connected sockets
+    clients = {}        # map client socket -> {'buffer': bytearray, 'id': int}
 
-                try:
-                    peek = s.recv(4096, socket.MSG_PEEK)
+    HEADER = "Req Code; ID; RF; Cal; Ch, W#; t_ow mil; t_ow submil; Event"
+    writer = RotatingFileWriter(base_name="gps_daq", ext=".txt", max_size=1024*1024, header = HEADER)  # 1 MB max
 
-                    if len(peek)>0:
+    try:
+        while True:
+            
+            readable, _, _ = select.select(sockets, [], [], 0.1)
+
+            for s in readable:
+                if s is server:
+                    client_socket, addr = server.accept()
+                    client_socket.setblocking(False)
+                    sockets.append(client_socket)
+                    clients[client_socket] = { #Dictionary of client raw data and addresses
+                        "buffer": bytearray(),
+                        "addr": addr
+                    }
+                    print(f"New ESP32 connected from {addr}")
+                    with open(connection_log, 'a') as log:
+                        log.write(f"{time.time()}: Reconnected from {addr}\n")
+
+                else:
+                    try:
+                        """peek = s.recv(4096, socket.MSG_PEEK)
+
+                        if len(peek)>0:"""
                         data = s.recv(4096)
-                        
-                        #print("data recieved")
-                        #Need new error handling
-                        """if not data:
-                            raise ConnectionResetError"""
 
-                        clients[s].extend(data)
+                        if data:
 
-                        # Process all complete 2-byte packets
-                        while len(clients[s]) >= PACKET_SIZE:
-                            packet = clients[s][:PACKET_SIZE]
-                            clients[s] = clients[s][PACKET_SIZE:]
+                            clients[s]["buffer"].extend(data)
 
-                            #Unpacks data
-                            inst, ID, RF, Cal, ch, w_num, ms, sub_ms, event_num = struct.unpack(PACKET_FORMAT, packet)
-                            
-                            #Should write all BH data to borehole first. Maybe have another if below.
-                            #ID == 200 for GPS test
-                            
+                            # Process all complete 2-byte packets
+                            while len(clients[s]["buffer"]) >= PACKET_SIZE:
+                                packet = clients[s]["buffer"][:PACKET_SIZE]
+                                clients[s]["buffer"] = clients[s]["buffer"][PACKET_SIZE:]
 
-                            # #Dealing with encoding pulses
-                            # if ID == 200 and ch == 1 and abs(ms - temp_BH_ts_ms) < 1000:
-                            #     print(f"Encoding From BH ESP: {inst, ID, RF, Cal, ch, w_num, ms, sub_ms, event_num}")
-                            #     with open(data_file,'a') as f:
-                            #         f.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}, {sub_ms}; {event_num}\n")
-                            #         print("Encoding BH data written to file")
-                            
-                            # else:
-                            #     print('No encoding signal')
-                            #     pass
-
-                            if ID == 48:
-                                writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}\n")
-                                print("BH data written to file")
+                                #Unpacks data
+                                inst, ID, RF, Cal, ch, w_num, ms, sub_ms, event_num = struct.unpack(PACKET_FORMAT, packet)
                                 
-                                if ch == 0 and RF == 0: #Measuring time from rise                                
-                                    for client_sock in clients:
-                                        if client_sock != s: #Broadcasts BH timestamp to all other clients except sender
-                                            try:
+                                if ID == 48:
+                                    writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}\n")
+                                    print("BH data written to file")
+                                    
+                                    if ch == 0 and RF == 0: #Measuring time from rise                                
+                                        for client_sock in clients:
+                                            if client_sock != s: #Broadcasts BH timestamp to all other clients except sender
                                                 
-                                                broadcast_format = '!IIIII'
-                                                broadcast_packet = struct.pack(broadcast_format, inst, w_num, ms, sub_ms, event_num)
-                                                broadcast = client_sock.send(broadcast_packet)
-                                                
-                                                #broadcast = client_sock.send(f"CMD: {inst}; T_S: {[w_num, ms, sub_ms]}; Event #: {event_num}\n".encode())
-                                                
-                                                print(f'Request for data sent:{broadcast}')
+                                                client_info = clients.get(client_sock)
+                                                client_addr = client_info["addr"] if client_info else "Unknown"
+                                                try:
+                                                    
+                                                    broadcast_format = '!IIIII'
+                                                    broadcast_packet = struct.pack(broadcast_format, inst, w_num, ms, sub_ms, event_num)
+                                                    broadcast = client_sock.send(broadcast_packet)
+                                                                                                        
+                                                    print(f'Request for data sent:{broadcast}')
 
-                        
-                                                    #Add error handling to close file properly 
-                                            except Exception as e:
-                                                print(f"Error sending to {client_sock}: {e}")
-                                                pass
-
-                            if ID != 48: #For other boreholes
-                                writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}\n")
-                                print("AS data written to file")
                             
-                except (ConnectionResetError, BrokenPipeError):
-                    print("Client disconnected")
-                    sockets.remove(s)
-                    s.close()
-                    del clients[s]
+                                                        #Add error handling to close file properly 
+                                                except Exception as e: #Broadcast exception
+                                                    print(f"Error sending to {client_sock}: {e}")
+                                                    with open(error_log, 'a') as f:
+                                                        f.write(f"Error sending to {client_addr}: {e}\n")
+                                                    sockets.remove(client_sock)
+                                                    client_sock.close()
+                                                    del clients[client_sock]
 
-except KeyboardInterrupt:
-    print("DAQ Stopped")
+                                else: #For other clients
+                                    writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}\n")
+                                    print("AS data written to file")
+                                
+                    except (ConnectionResetError, BrokenPipeError): #Recieve exception
+                        print("Client disconnected")
+                        sockets.remove(s)
+                        s.close()
+                        del clients[s]
 
-finally:
-    writer.close()
+    except KeyboardInterrupt:
+        print("DAQ Stopped")
+
+    finally:
+        writer.close()
+
+if __name__ == "__main__":
+    while True:
+        try:
+            connection_log = 'connection_log.txt'
+            error_log = 'error_log.txt'
+            run_server()
+        except Exception as e: #Auto-restart server on any errors
+            print(f"[FATAL ERROR] {e}")
+            traceback.print_exc()
+            with open(error_log, 'a') as f:
+                f.write(f"Fatal error: {e}\n{traceback.format_exc()}\n")
+            print("Restarting server in 3 seconds...")
+            time.sleep(3)
