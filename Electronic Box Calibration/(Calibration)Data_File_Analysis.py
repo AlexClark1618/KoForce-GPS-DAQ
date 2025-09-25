@@ -148,13 +148,13 @@ def coincidence_plotter(DATA):
 
 ### Main ###
 if __name__ == "__main__": 
-    DATA = 'gps_daq_20250917_run1_cycle1.txt'
+    DATA = '(Box 5) gps_daq_20250924_run6_cycle1.txt'
 
-    box_num = 1
+    box_num = 5
     set_pulse_width = 100 #In nanoseconds
     set_pulse_period = 5000000
-    min = 5
-    max = 95
+    min = 1
+    max = 99
 
     Plot_data = data_parser(DATA)
     clock_period_plotter(Plot_data)
