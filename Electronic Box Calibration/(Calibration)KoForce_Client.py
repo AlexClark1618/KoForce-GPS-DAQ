@@ -12,6 +12,7 @@ import select
 from machine import UART, Pin, WDT
 import time
 import gc
+from sys import stdout
 
 #---------GPS Functions-----------
 UBX_HDR = b'\xb5b'
@@ -20,7 +21,7 @@ TIM_TM2=b'\x0d\x03'
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
 uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf= 8192*3)
-
+rxbuf = 8192 *3
 time.sleep(1)
 NNC=10
 numMeas=1
@@ -29,7 +30,13 @@ def clearRxBuf():
     while uart1.any():
         print('buffer cleared of ',uart1.any(), 'bytes\n')
         (uart1.read())
-
+        
+def maxRxBuf(n): 
+    while (uart1.any() > (n )):
+        nskim = uart1.any()-n + 1000
+        print('[max] buffer cleared of  ',nskim, 'bytes\n')
+        (uart1.read(nskim))
+        
 def findUBX_HDR():
     while  (uart1.read(1) != b'\xb5'):
         pass
@@ -54,7 +61,7 @@ def request(wno,Ms,subMs):
         if res[0] != 0:
             #print(res[0] == 0)
             #print ('read Cal Data',res)
-            if (abs(Ms - res[1]) > 1) | (res[0] != wno) :
+            if (abs(Ms - res[1]) > 10000) | (res[0] != wno) :
                 pass
                 #print('Unreasonable request')
                  #Assuming we get a res > Ms and fails this check it should reset it
@@ -101,12 +108,14 @@ def request(wno,Ms,subMs):
         timesOfInterest.append((RFRaw[i],1,chRaw[i],wno,Ms,SubMs))
     return(timesOfInterest)
 
+#clearbufcount = 0
 def readData(det):
 #det: 0 == BH and 1 == AS
 #     towMsR=0
 #     while towMsR < Request:
         
         #print('readData started')
+        maxRxBuf(20000)
         findUBX_HDR()
         #print('found header')
         #print('\tFound UBX header: ', bytehdr)
@@ -119,20 +128,29 @@ def readData(det):
         lenb = data0[2:4]
         if bytehdr2 == RXM_TM:
             hdr2='RXM_TM'
-            #print('1')
+            print('1')
             #print('\tFound Raw time stamp header: ', bytehdr2)
         elif bytehdr2 == TIM_TM2:
             hdr2='TIM_TM2'
-            #print('2')
+            print('2')
             #print('\tFound Calibrated time stamp header: ', bytehdr2)
 
         leni = int.from_bytes(lenb, "little")
         #print('\tdata length: ',leni)
         ##print ('buffer ', uart1.any())
-
         while uart1.any() < (leni+2):
-            #print('3')
-            pass
+            #print(f"leni: {leni}, rxbuf: {rxbuf}")
+            if leni > rxbuf:
+                clearRxBuf()
+                #clearbufcount += 1
+                #print("leni > rxbuf: cleared")
+                return((0,0,0))
+                
+            else:
+                print('3')
+            #maxRxBuf(20000)
+            #print(uart1.any())
+                pass
         
         if (bytehdr2 == RXM_TM):
                 plb = uart1.read(leni)
@@ -181,7 +199,7 @@ def readData(det):
                     towMsRaw.append(towMs)
                     #print("towMs:", towMs)
                     towSubMsRaw.append(towSubMs)
-
+                    print('4')
         elif (bytehdr2 == TIM_TM2):
                 plb = uart1.read(leni)
                 #print(plb)
@@ -228,7 +246,7 @@ def readData(det):
                 accEstb=plb[24:28]
                 accEst=int.from_bytes(accEstb,"little")
                 #print('accEst ', accEst, end=end)
-                #print('5')
+                print('5')
                 ##print('\n')
                 
                 #cksum = uart1.read(2)
@@ -239,14 +257,14 @@ def readData(det):
                     countCal.append(count)
                     towMsCal.append(towMsR)
                     towSubMsCal.append(towSubMsR)
-                    #print('6')
+                    print('6')
         else:
-                #print('It is junk')
+                print('It is junk')
                 
                 while uart1.any():
                     #print('buffer cleared of ',uart1.any(), 'bytes\n')
                     (uart1.read())
-                    
+                    print('7')
         if (bytehdr2 == TIM_TM2) & (det == 1):
             #print('data bytehdr2',bytehdr2)
             #print("towMsR:", towMsR)
@@ -269,7 +287,7 @@ delay=1
 def con_to_wifi(ssid, password):
     if wlan.isconnected():
         wlan.disconnect()
-        time.sleep(0.1)
+        time.sleep(1)
     
     while not wlan.isconnected():
         try:
@@ -329,7 +347,7 @@ def reconnect_socket():
     if s:
         try:
             poller.register(s, select.POLLIN)
-            clear_rx_buffer(s, poller)  # Only call this if s is valid
+            clear_wifi_rx_buffer(s, poller)  # Only call this if s is valid
             print("Reconnected successfully.")
         except Exception as e:
             print("Error registering poller or clearing buffer:", e)
@@ -337,7 +355,7 @@ def reconnect_socket():
     else:
         print("Socket reconnection failed.")
 
-def clear_rx_buffer(sock, poller):      
+def clear_wifi_rx_buffer(sock, poller):      
     if not sock:
         print("No socket to clear.")
         return
@@ -351,7 +369,7 @@ def clear_rx_buffer(sock, poller):
                 sock.recv(1024)
             except OSError:
                 break
-        print("rx buffer cleared")
+        print("wifi rx buffer cleared")
     except Exception as e:
         print("Error during buffer clear:", e)
     
@@ -371,7 +389,7 @@ mac_ID = wlan.config('mac')[-1]  # last byte of MAC
 print('mac id:', mac_ID)
 # ---------- Connecting to Server ----------
 #HOST = '192.168.0.93' #Home
-HOST = '134.69.200.155'
+HOST = '134.69.235.58'
 #HOST = '134.69.218.243' #Karbon Computer
 PORT = 12345
 
@@ -381,28 +399,34 @@ poller = select.poll()
 if s:
     try:
         poller.register(s, select.POLLIN)
-        clear_rx_buffer(s, poller)
+        clear_wifi_rx_buffer(s, poller)
     except Exception as e:
         print("Initial poller registration failed:", e)
         s = None  # Mark as failed
 else:
     print("Initial socket connect failed.")
 
-# ---------- Main Loop ----------
+# ---------- Main Loop ---------
+
 i = 0
 while i < 20:
     clearRxBuf()
     time.sleep(0.1)
     i += 1
 
-wdt = WDT(timeout=5000)  # 5 seconds
+wdt = WDT(timeout=20000)  # 5 seconds
 print("Running")
 event_num = 0
-while True:
+
+try:
+    while True:
     #Checks for wifi disconnections. (May want to move this to an exception handle)
-    try:
-        if not wlan.isconnected():
-            con_to_wifi(ssid, password)
+    #print("Clear Buf Count:", clearbufcount)
+        try:
+            if not wlan.isconnected():
+                con_to_wifi(ssid, password)
+        except Exception as e:
+            print("Error reconnecting to wifi:", e)      
             
         RFRaw=[]
         chRaw=[]
@@ -417,7 +441,8 @@ while True:
         while res[1] == 0:
             try:
                 res = readData(1)
-            except Exception: #Restart on any error
+            except Exception as e: #Restart on any error
+                print("Error in reading for data:", e)
                 continue
             
         w_num = res[0]
@@ -426,7 +451,8 @@ while True:
         
         try:
             timesOfInterest=request(w_num,ms,sub_ms)
-        except Exception: #Restart on any error
+        except Exception as e: #Restart on any error
+            print("Error in request:", e)
             continue
 
         for i in range(len(timesOfInterest)):
@@ -442,18 +468,26 @@ while True:
 
             try:
                 packet = data_packing(send_packet_format)
+                #print('buffer at tx',uart1.any(), 'bytes\n')
+
                 data = s.send(packet)
                 wdt.feed()
 
                 #print(f'Bytes sent: {data}')#Prints byte size
             
-            except OSError as e: 
-                print("Socket error:", e)
-                reconnect_socket()
+            except Exception as e: 
+                print("Error packing or sending data", e)
+                reconnect_socket() #if socket error reconnect; Need to figure out the specific error code and can create an if conditional
                 break  # Exit inner loop
-    except Exception as e:
-        print("Main loop exception:", e)
-        reconnect_socket()
 
-    event_num += 1
-    print(".")
+        event_num += 1
+        #print(".")    
+
+except Exception as e:
+    print("Main loop exception:", e) # To catch anything I missed
+    reconnect_socket()
+
+    
+    
+
+
