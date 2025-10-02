@@ -1,5 +1,5 @@
-#Airshower
-#8-20-25
+#Airshower Main
+#Updated- 10-1-25
 
 import socket
 import ustruct
@@ -17,11 +17,11 @@ RXM_TM=b'\x02\x74'
 TIM_TM2=b'\x0d\x03'
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
-uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf= 8192*2)
+uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf= 8192*3)
 
+rxbuf = 8192 * 3
 
 time.sleep(1)
-#while(1):
 NNC=10
 numMeas=1
 
@@ -30,14 +30,79 @@ def clearRxBuf():
         print('buffer cleared of ',uart1.any(), 'bytes\n')
         (uart1.read())
 
-def findUBX_HDR():
-    while  (uart1.read(1) != b'\xb5'):
-        pass
-    while  (uart1.read(1) != b'\x62'):
-        pass
-    #        C   ID  RF Cal  ch wno  Ms Sub cnt
-    #request=(0,  0,  0,  0,  0,  0,  0,  0,  0)
+def maxRxBuf(n):
+    while (uart1.any() > (n )):
+        nskim = uart1.any()-n + 1000
+        #print('buffer cleared of ',nskim, 'bytes\n')
+        (uart1.read(nskim))
+    #return(nskim)
 
+def findUBX_HDR():
+    #print('findUBX_HDR')
+    Byte2=0
+    while Byte2 != b'\x62':
+        while uart1.read(1) != b'\xb5':
+            pass
+        Byte2=uart1.read(1)
+
+
+def request(wnoToi,MsToi,subMsToi):
+    resToi=MsToi*1000000+subMsToi
+    gc.collect()
+    res=(0,0,0)
+    #print("res[1]", res[1])
+    #print("Ms:", MsToi)
+    while res[1] < MsToi+1: #Exceed the time of interest by at least 1 ms    
+        res=readData(1)
+        #print("res complete")
+        if res[0] != 0:
+            #print(res[0] == 0)
+            #print ('read Cal Data',res)
+            if (abs(MsToi - res[1]) > 10000) | (res[0] != wnoToi) :
+                pass
+                #print("Deltat:", MsToi - res[1])
+                #print('Unreasonable request')
+                #return([(100,0,0,0,0,0)])  #error code 100
+    #readData(1)
+    lastC=len(countCal)-1
+    lastR=len(countRaw)-1
+    #Find upper index in raw data
+    for i in range(lastR,-1,-1):
+        if countRaw[i]==countCal[lastC]:
+            break
+    rawIndex2=i
+    #Find lower index in raw data
+    for i in range(lastR-1,-1,-1):
+        if countRaw[i]==countCal[lastC-1]:
+            break
+    rawIndex1=i
+   
+    tCal2=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
+    tCal1=towMsCal[lastC-1]*1000000+(towSubMsCal[lastC-1])
+    tRaw2=towMsRaw[rawIndex2]*1000000+int(towSubMsRaw[rawIndex2]/1000)
+    tRaw1=towMsRaw[rawIndex1]*1000000+int(towSubMsRaw[rawIndex1]/1000)
+       
+    #slope = (tCal2-tCal1)/(tRaw2-tRaw1)
+    #print('slope', slope)
+    intercept = int(((tCal2-tRaw2)+(tCal1-tRaw1))/2)  # improved intercept
+    timesOfInterest=[]
+    for i in range(rawIndex1,rawIndex2+2):   #
+        tRaw=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
+#       print(towMsRaw,towSubMsRaw,intercept,tRaw)
+        #res=int((tRaw-tRaw1)*slope)+tCal1
+        res=tRaw + intercept
+        if ((abs(res-resToi))< 1000000):  #only keep cal data that are within 1ms of Toi.
+            sec=int(res/1000000000)
+            ns=res-sec*1000000000
+            ms=int(ns/1000000)
+            Ms=sec*1000+ms
+            SubMs=res-Ms*1000000
+            if (SubMs > 999999):
+                print('*************SubMs > 999999*********')
+            timesOfInterest.append((RFRaw[i],1,chRaw[i],wnoToi,Ms,SubMs)) 
+
+    return(timesOfInterest)
+'''
 def request(wno,Ms,subMs):
     #print('Request Started')
     #print(gc.mem_free())
@@ -54,9 +119,10 @@ def request(wno,Ms,subMs):
         if res[0] != 0:
             #print(res[0] == 0)
             #print ('read Cal Data',res)
-            if (abs(Ms - res[1]) > 1) | (res[0] != wno) :
+            if (abs(Ms - res[1]) > 10000) | (res[0] != wno) :
+                print((Ms - res[1]))
                 pass
-                #print('Unreasonable request')
+                print('Unreasonable request')
                  #Assuming we get a res > Ms and fails this check it should reset it
 
                 #clearRxBuf()
@@ -80,8 +146,8 @@ def request(wno,Ms,subMs):
 
     tCal2=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
     tCal1=towMsCal[lastC-1]*1000000+(towSubMsCal[lastC-1])
-    tRaw2=towMsRaw[rawIndex2-1]*1000000+int(towSubMsRaw[rawIndex2-1]/1000)
-    tRaw1=towMsRaw[rawIndex1-1]*1000000+int(towSubMsRaw[rawIndex1-1]/1000)
+    tRaw2=towMsRaw[rawIndex2]*1000000+int(towSubMsRaw[rawIndex2]/1000)
+    tRaw1=towMsRaw[rawIndex1]*1000000+int(towSubMsRaw[rawIndex1]/1000)
         
     slope = (tCal2-tCal1)/(tRaw2-tRaw1)
     #print('slope', slope)
@@ -98,13 +164,16 @@ def request(wno,Ms,subMs):
         SubMs=res-Ms*1000000
         timesOfInterest.append((RFRaw[i],1,chRaw[i],wno,Ms,SubMs))
     return(timesOfInterest)
-
+'''
 def readData(det):
 #det: 0 == BH and 1 == AS
 #     towMsR=0
 #     while towMsR < Request:
         
         #print('readData started')
+        maxRxBuf(15000)
+        #if (nskim > 0):
+        #    print('buffer cleared of ',nskim, 'bytes\n')
         findUBX_HDR()
         #print('found header')
         #print('\tFound UBX header: ', bytehdr)
@@ -129,8 +198,13 @@ def readData(det):
         ##print ('buffer ', uart1.any())
 
         while uart1.any() < (leni+2):
+            if leni > rxbuf:
+                clearRxBuf()
+                return((0,0,0))
+ 
             #print('3')
-            pass
+            else:
+                pass
         
         if (bytehdr2 == RXM_TM):
                 plb = uart1.read(leni)
@@ -231,8 +305,8 @@ def readData(det):
                 #cksum = uart1.read(2)
                 #print('checksum',cksum,'\n')
                 if det == 1:
-                    RFRaw.append(0)
-                    chRaw.append(ch)
+                    #RFRaw.append(0)
+                    #chRaw.append(ch)
                     countCal.append(count)
                     towMsCal.append(towMsR)
                     towSubMsCal.append(towSubMsR)
@@ -261,24 +335,13 @@ def readData(det):
                 #print('Header passed')
             return((0,0,0))
 # ---------- Functions ----------
-max_retries=5
 delay=1
 def con_to_wifi(ssid, password):
-    '''
-    if not wlan.isconnected():
-        print("Connecting to Wi-Fi...")
-        wlan.connect(ssid, password)
-        while not wlan.isconnected():
-            time.sleep(1)
-    print("Wi-Fi connected.")
-    return None
-    '''
     if wlan.isconnected():
         wlan.disconnect()
         time.sleep(0.1)
     
-    retries = 0
-    while retries < max_retries:
+    while not wlan.isconnected():
         try:
             print("Connecting to Wi-Fi...")
             wlan.connect(ssid, password)
@@ -287,14 +350,7 @@ def con_to_wifi(ssid, password):
             print("Wi-Fi connected.")
             return wlan.ifconfig()
         except OSError as e:
-            print(f"Connection attempt {retries + 1} failed: {e}")
-            retries += 1
-            if retries < max_retries:
-                print(f"Retrying in {delay} seconds...")
-                time.sleep(delay)
-            else:
-                print("Max retries reached. Could not connect to Wi-Fi.")
-                return None
+            print(f"Connection attempt failed: {e}")
  
 send_packet_format = "!IIIIIIIII"
 request_packet_format = '!IIIII'
@@ -322,20 +378,53 @@ def connect_socket(host, port):
         return s
     except OSError as e:
         print("Failed to connect socket:", e)
-        return None
-    
-def clear_rx_buffer(sock, poller):
-    while True:
-        events = poller.poll(0)  # timeout = 0 means don't wait
-        if not events:
-            print('rx buffer cleared')
-            break
-        try:
-            sock.recv(1024)
-        except OSError:
-            break
-    
+        pass
 
+def reconnect_socket():
+    global s, poller
+
+    # Try to safely unregister and close old socket
+    try:
+        if s:
+            poller.unregister(s)
+            s.close()
+    except Exception as e:
+        print("Error closing old socket:", e)
+
+    print("Reconnecting socket...")
+    time.sleep(1)
+
+    # Attempt reconnect
+    s = connect_socket(HOST, PORT)
+    if s:
+        try:
+            poller.register(s, select.POLLIN)
+            clear_rx_buffer(s, poller)  # Only call this if s is valid
+            print("Reconnected successfully.")
+        except Exception as e:
+            print("Error registering poller or clearing buffer:", e)
+            s = None  # Mark socket as dead
+    else:
+        print("Socket reconnection failed.")
+
+def clear_rx_buffer(sock, poller):      
+    if not sock:
+        print("No socket to clear.")
+        return
+
+    try:
+        while True:
+            events = poller.poll(0)  # Non-blocking poll
+            if not events:
+                break
+            try:
+                sock.recv(1024)
+            except OSError:
+                break
+        print("rx buffer cleared")
+    except Exception as e:
+        print("Error during buffer clear:", e)
+    
 # ---------- Wi-Fi Setup ----------
 #ssid = 'TP-Link_FB80'
 #password = 'Beau&River'
@@ -357,15 +446,19 @@ HOST = '134.69.218.243' #Karbon Computer
 PORT = 12345
 
 s = connect_socket(HOST,PORT)
-
-# ---------- For peeking ----------
 poller = select.poll()
-poller.register(s, select.POLLIN)
 
+if s:
+    try:
+        poller.register(s, select.POLLIN)
+        clear_rx_buffer(s, poller)
+    except Exception as e:
+        print("Initial poller registration failed:", e)
+        s = None  # Mark as failed
+else:
+    print("Initial socket connect failed.")
+    
 # ---------- Main Loop ----------
-
-
-clear_rx_buffer(s,poller)
 
 i = 0
 while i < 20:
@@ -375,101 +468,95 @@ while i < 20:
 
 wdt = WDT(timeout=10000)  # 5 seconds
 print("Running")
+
 while True:
-    #Checks for wifi disconnections. (May want to move this to an exception handle)
-    if not wlan.isconnected():
-        con_to_wifi(ssid, password)
-        
-    event = poller.poll(1) #Checks for socket activity
     
     try:
+
+        # Ensure Wi-Fi stays connected
+        if not wlan.isconnected():
+            print("Wi-Fi disconnected. Reconnecting...")
+            con_to_wifi(ssid, password)
+
+        # Check for socket activity
+        try:
+            event = poller.poll(1)
+            maxRxBuf(15000)
+        except OSError as e:
+            print("Polling error:", e)
+            reconnect_socket()
+            continue
+
         if event:
-            #print('Data rec')
-            req = s.recv(1024) #Request from server
-            #print(req)
-            
-            if req: #If request proceed
-                #print('Data present')
+            try:
+                req = s.recv(1024)
+                print('buffer size ',uart1.any(), 'bytes\n')
+     
+            except OSError as e:
+                print("Socket recv error:", e)
+                reconnect_socket()
+                continue
+
+            if req:
                 try:
                     inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, req)
-                    #print('BH req event_num:',event_num)
-                except:
-                    print("Error unpacking")
-
-                #From borehole
-                if inst == 99: #Processes data and collects requested integer and specified length around it                                
-                    #print("w_num:" , w_num)
-                    #print("ms:" , ms)
-                    #print("sub_ms:" , sub_ms)
-                    #print('inst successful')
-                    RFRaw=[]
-                    chRaw=[]
-                    countRaw=[]
-                    countCal=[]
-                    towMsRaw=[]
-                    towMsCal=[]
-                    towSubMsRaw=[]
-                    towSubMsCal=[]
-                    
-                    print('Buffer len:',uart1.any())
-                    #print('request started')
-                    timesOfInterest=request(w_num,ms,sub_ms)
-                    #print('request finished')
-                    #timesOfInterest = [(0,0,0,0,0,0,0,0,0)]
-                    toSend=[]
-                    ID = mac_id
-                    for i in range(len(timesOfInterest)):
-                        
-                        toi = (99, ID,
-                            timesOfInterest[i][0],
-                            timesOfInterest[i][1],
-                            timesOfInterest[i][2],
-                            timesOfInterest[i][3],
-                            timesOfInterest[i][4],
-                            timesOfInterest[i][5],
-                            event_num)
-                        toSend.append(toi)
-                    #Jean-Luc's request function goes somewhere here. Will need to unpack message and put time elements into the function
-                    for tup in toSend:
-                        inst = tup[0]           
-                        ID = tup[1]
-                        RF = tup[2]              
-                        cal = tup[3]               
-                        ch = tup[4]           
-                        w_num = tup[5]    
-                        ms = tup[6]       
-                        sub_ms = tup[7]
-                        event_num = tup[8] #Unnecessary
-                        #print('tup broken and ready for packing')
-                        try:
-                            packet = data_packing(send_packet_format)
-                            #for i in range(30): #Testing sending multiple packets per request
-                            data = s.send(packet)
-                            wdt.feed()
-
-                            #print(f'Bytes sent: {data}')#Prints byte size
-                        
-                        except OSError as e: 
-                            print("Socket error:", e)
-                            try:
-                                poller.unregister(s)
-                                s.close()
-                            except:
-                                pass
-                            
-                            time.sleep(1)
-                            s = connect_socket(HOST, PORT)
-                            if s:
-                                poller.register(s, select.POLLIN)
-                                #continue
-                else:
+                except Exception as e:
+                    print("Error unpacking request:", e)
                     continue
+
+                if inst == 99:
+                    try:
+                        # Reset GPS buffers
+                        RFRaw=[]
+                        chRaw=[]
+                        countRaw=[]
+                        countCal=[]
+                        towMsRaw=[]
+                        towMsCal=[]
+                        towSubMsRaw=[]
+                        towSubMsCal=[]
+
+                        print("Processing GPS request...")
+                        
+                        timesOfInterest = request(w_num, ms, sub_ms)
+                        print(timesOfInterest)
+                        if len(timesOfInterest)==0:
+                            continue
+
+                        for i in range(len(timesOfInterest)):
+                            inst = 99           
+                            ID = mac_id
+                            RF = timesOfInterest[i][0]              
+                            cal = timesOfInterest[i][1]               
+                            ch = timesOfInterest[i][2]           
+                            w_num = timesOfInterest[i][3]   
+                            ms = timesOfInterest[i][4]      
+                            sub_ms = timesOfInterest[i][5]
+                            event_num = event_num #Unnecessary
+
+                            packet = data_packing(send_packet_format)
+                            try:
+                                s.send(packet)
+                                wdt.feed()
+                                print('buffer size ',uart1.any(), 'bytes\n')
+
+                                print("data sent")
+                            except Exception as e:
+                                print("Send error:", e)
+                                reconnect_socket()
+                                break  # Exit inner loop
+
+                    except Exception as e:
+                        print("Error during GPS handling:", e)
+                        clearRxBuf()
+                        #reconnect_socket()
+                        continue
+
     except Exception as e:
-        #print(f"Error sending to {s}:{e}")
-        import sys
-        sys.print_exception(e)
-        
-    print(".")
+        print("Main loop exception:", e)
+        reconnect_socket()
+        continue
+
         
         
 
