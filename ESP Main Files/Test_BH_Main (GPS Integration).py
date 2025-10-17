@@ -15,12 +15,12 @@ RXM_TM=b'\x02\x74'
 TIM_TM2=b'\x0d\x03'
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
-uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=8192)
+uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=8192*2)
 
 
-time.sleep(1)
+time.sleep(0.1)
 #while(1):
-NNC=10
+#NNC=10
 numMeas=1
 
 def clearRxBuf():
@@ -177,7 +177,7 @@ def readData(det):
                 edgeR = (edgeInfo >> 7) & 1
                 timeValid = (edgeInfo >> 6) & 1
                 #timeValid = int.from_bytes(timeValidb, "little")
-                ##print('timeValid', timeValid, end=end)
+                #print('timeValid', timeValid, end=end)
                 countb = plb[2:4]
                 count=int.from_bytes(countb, "little")
                 ##print('count ', count, end =end)
@@ -208,8 +208,8 @@ def readData(det):
                 #cksum = uart1.read(2)
                 #print('checksum',cksum,'\n')
                 if det == 1:
-                    RFRaw.append(0)
-                    chRaw.append(ch)
+                    #RFRaw.append(0)
+                    #chRaw.append(ch)
                     countCal.append(count)
                     towMsCal.append(towMsR)
                     towSubMsCal.append(towSubMsR)
@@ -224,11 +224,11 @@ def readData(det):
         if (bytehdr2 == TIM_TM2) & (det == 1):
             return((wnoR,towMsR,towSubMsR)) #calibrated data
         elif (bytehdr2 == TIM_TM2) & (det == 0):
-            print(ch, wnoR, wnoF, towMsR, towMsF, towSubMsR, towSubMsF)
+            #print(ch, wnoR, wnoF, towMsR, towMsF, towSubMsR, towSubMsF)
 
             return [
-                (0, 1, ch, wnoR, towMsR, towSubMsR),
-                (1, 1, ch, wnoF, towMsF, towSubMsF)
+                (0, timeValid, ch, wnoR, towMsR, towSubMsR, count),
+                (1, timeValid, ch, wnoF, towMsF, towSubMsF, count)
             ]
         else:
             return((0,0,0))
@@ -259,7 +259,7 @@ def con_to_wifi(ssid, password):
         except OSError as e:
             print(f"Connection attempt failed: {e}")
             
-packet_format = "!IIIIIIIII"
+packet_format = "!iiiiiiiiii"
 
 def data_packing(packet_format: str):
     packet = ustruct.pack(packet_format, 
@@ -267,11 +267,12 @@ def data_packing(packet_format: str):
         ID,
         RF,              # char (1 byte)
         cal,              # uint8 (1 byte)
-        ch,          # uint8 (1 byte)
+        ch,          # uint8 (1 byte)	
         w_num,      	 # uint32 (4 bytes) #Q for 8 byte uint64
         ms,         # uint32 (4 bytes)
         sub_ms,
-        event_num                  # uint32 (4 bytes)
+        event_num,
+        count 				# uint32 (4 bytes)
     )
     
     return packet
@@ -320,7 +321,7 @@ clearRxBuf()
 
 event_num = 0 #Keeps track of borehole events (could be moved to server)
 
-wdt = WDT(timeout=5000)  # 5 seconds
+wdt = WDT(timeout=10000)  # 5 seconds
 
 while True:
     #Checks for wifi disconnections. (May want to move this to an exception handle)
@@ -345,7 +346,10 @@ while True:
     
     res = (0,0,0)
     while res[0] == 0:
+        print(res)
         res = readData(0)
+        wdt.feed()
+
         print(res)
     #print('res:', res)
     timesOfInterest = res
@@ -353,7 +357,10 @@ while True:
     
     toSend=[]
     for i in range(len(timesOfInterest)):
-        print(timesOfInterest[i][0])
+        #print(timesOfInterest[i][0])
+        #(0, timeValid, ch, wnoR, towMsR, towSubMsR, count),
+
+
         toi = (99, ID,
                timesOfInterest[i][0],
                timesOfInterest[i][1],
@@ -361,7 +368,9 @@ while True:
                timesOfInterest[i][3],
                timesOfInterest[i][4],
                timesOfInterest[i][5],
-               event_num)
+               event_num,
+               timesOfInterest[i][6],
+        )
         toSend.append(toi)
     '''
     #Test data
@@ -383,19 +392,21 @@ while True:
         ID = tup[1]
         RF = tup[2]              
         cal = tup[3]               
-        ch = tup[4]           
+        ch = tup[4]
+#       timeValid = tup[5]
         w_num = tup[5]    
         ms = tup[6]       
         sub_ms = tup[7]
         event_num = tup[8] #Unnecessary 
-
+        count = tup[9]
+        
         try:
             packet = data_packing(packet_format)
             data = s.send(packet)
             wdt.feed()
 
             gc.collect()
-            print(f'Bytes sent: {data}') #Prints byte size
+            #print(f'Bytes sent: {data}') #Prints byte size
         
         #Attempts to handle socket disconnecting. Reconnects and then resumes sending data.
         except OSError as e: 
