@@ -3,4 +3,4 @@ Description:
 	only transmitting data to a central server writing the data to disk when a trigger is detected on one of three underground borehole detectors. This is an R&D project to utilize muon tomography for geological exploration. 
 
 Collaborators:
-	Jean-Luc Geaverau, Alex Clark
+	Jean-Luc Geaverau, Alex Clark, Tim Healy
