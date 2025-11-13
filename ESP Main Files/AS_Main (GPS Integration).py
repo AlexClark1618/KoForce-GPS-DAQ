@@ -1,10 +1,6 @@
 #Airshower Main
-#Updated- 10-20-25
-
-#Changelog:
-    #Altered diff in request function
-    #Fixed error in how sockets were reconnecting
-    #
+#Updated- 10-28-25 (Sent from Jean-Luc)
+#Updated with OTA- 11-10-25 (Sent from Tim)
 
 import socket
 import ustruct
@@ -14,6 +10,62 @@ from machine import UART, Pin, WDT
 import time
 import gc
 import errno
+import ota_update
+import _thread
+
+#---------OTA Function------------
+try:
+    with open('config.txt') as f:
+        detector_num = f.read().strip()
+        print("This is Detector " + detector_num)
+except OSError:
+    detector_num = "0"  # default if not yet set
+    print("No config.txt found, using default detector number:", detector_num)
+
+version_num = "0.03"
+wdt = None
+s = None
+ota_in_progress = False
+
+def start_listener():
+    global wdt, s, ota_in_progress, version_num, detector_num
+    addr = socket.getaddrinfo('0.0.0.0', 8080)[0][-1]
+    t = socket.socket()
+    t.bind(addr)
+    t.listen(1)
+
+    print("Listening for OTA trigger on port 8080...")
+
+    while True:
+        cl, addr = t.accept()
+        print('Client connected from', addr)
+        request = cl.recv(1024)
+        if not request:
+            cl.close()
+            continue
+
+        #request = str(request)
+        request = request.decode()
+
+        if "/ota" in request:
+            print("OTA trigger received")
+            try:
+                wdt = None  # effectively disables watchdog during OTA
+                print("Watchdog disabled for OTA.")
+            except Exception as e:
+                print("Error disabling WDT:", e)
+            
+            ota_in_progress = True
+            time.sleep(0.2) # check this time for timeout errors in other places
+            cl.send("HTTP/1.1 200 OK\r\n\r\nUpdating...\n")
+            ota_update.download_and_install(cl)
+        elif "/version" in request:
+            cl.send("HTTP/1.1 200 OK\r\n\r\nDetector "+ detector_num + " Version Number: " + version_num + "\n")
+        else:
+            cl.send(b"HTTP/1.1 200 OK\r\n\r\nHello from ESP32\n")
+        cl.close()
+
+
 
 #---------GPS Functions-----------
 UBX_HDR = b'\xb5b'
@@ -49,11 +101,11 @@ PORT = 12345
 #Socket Stuff
 
 # ---------- Functions ----------
-wdt = WDT(timeout=20000)
+wdt = WDT(timeout=20000) # extra 0
 def clearRxBuf():
     try:
         while uart1.any():
-            print('buffer cleared of ',uart1.any(), 'bytes\n')
+            #print('buffer cleared of ',uart1.any(), 'bytes\n')
             (uart1.read())
         RFRaw=[]
         chRaw=[]
@@ -90,9 +142,13 @@ def con_to_wifi(ssid, password):
             #s.send(packet)
             pass
         
-con_to_wifi(ssid, password)
+if con_to_wifi(ssid, password):
+    _thread.start_new_thread(start_listener, ())
+    print("OTA listener started in background.")
+else:
+    print("Wi-fi connection failed.")
 ip, subnet, gateway, dns = wlan.ifconfig()
-ip_last_byte = int(ip.split('.')[-1])
+ip_last_byte = int(ip.split('.')[-1])           # NEED TO PRINT THE ENTIRE IP ADDRESS HERE?
 print("ESP IP:", ip_last_byte)
 print(type(ip_last_byte))
 def connect_socket(host, port):
@@ -110,8 +166,10 @@ def connect_socket(host, port):
         #s.send(packet)
 
 s = connect_socket(HOST,PORT)
-s.setblocking(False) #SOme blocking may be good. I want the code to wait for data, but not to wait when sending. Maybe there is a good medium here.
-s.settimeout(.1)
+time.sleep(1)
+#s.setblocking(False) #SOme blocking may be good. I want the code to wait for data, but not to wait when sending. Maybe there is a good medium here.
+s.settimeout(.05)
+
 
 send_packet_format = "!iiiiiiiiii"
 request_packet_format = '!iiiii'
@@ -199,7 +257,7 @@ def findUBX_HDR():
                 pass
             Byte1 = uart1.read(1)
             while Byte1 != b'\xb5':
-                print('.',end='')
+                #print('.',end='')
                 while uart1.any() < 1:
                     pass
                 Byte1 = uart1.read(1)
@@ -221,7 +279,7 @@ def request(wnoToi,MsToi,subMsToi):
         gc.collect()
         res=(0,0,0,0)
         #print("res[1]", res[1])
-        print("Ms:", MsToi)
+        #print("Ms:", MsToi)
         #print("request started")
         while res[1] < MsToi: #Exceed the time of interest by at least 1 ms    
             res=readData(1)
@@ -234,7 +292,7 @@ def request(wnoToi,MsToi,subMsToi):
                 diff = MsToi - res[1]
                 if (abs(diff) > 2000) | (res[0] != wnoToi) :
                     print('Unreasonable request')
-                    print("Deltat:", diff)
+                    #print("Deltat:", diff)
                     #print("Deltat:", MsToi - res[1])
                     #print('Unreasonable request')
                     error_msg = (100, mac_id, 16, diff, 0, 0, 0, 0, 0, 0)
@@ -250,9 +308,9 @@ def request(wnoToi,MsToi,subMsToi):
         print("countCal:", countCal)
         print("lastR:",lastR)
         print("lastC:",lastC)
-        #print("towMsRaw:",towMsRaw[-60:])
-        #print("towMsCal:", towMsCal)
-        print('buffer size ',uart1.any(), 'bytes\n')
+        print("towMsRaw:",towMsRaw[-60:])
+        print("towMsCal:", towMsCal)
+        #print('buffer size ',uart1.any(), 'bytes\n')
 
         if (lastC < 1) or (lastR < 1): #Bandaid for when there is only one calibrated data for some reason
             print('Too few elements')
@@ -529,7 +587,16 @@ NEvents2=0
 T0=time.ticks_us()
 
 array_count = 0
+
 while True:
+    if ota_in_progress:
+        print("OTA in progress: closing gps data socket")
+        try:
+            s.close()
+        except Exception as e:
+            print("Socket close error:", e)
+        time.sleep(1_000_000)  # effectively idle until reset
+
     print("1")
 
     try:
@@ -539,22 +606,26 @@ while True:
             con_to_wifi(ssid, password)
         maxRxBuf(10000) #Make sure buffer isnt full before recieving
         try:
-            print('buffer size ',uart1.any(), 'bytes\n')
-            print('time(ms)',int(time.time_ns()))
+            #print('buffer size ',uart1.any(), 'bytes\n')
+            #print('time(ms)',int(time.time_ns()))
             req = s.recv(20) #Dont need poller, can just check for socket activity on a not blocking socket
-            print('time(ms)',int(time.time_ns()))
-            print("Data recieved:", len(req))
-            print('buffer size ',uart1.any(), 'bytes\n')
+            #print('time(ms)',int(time.time_ns()))
+            #print("Data recieved:", len(req))
+            #print('buffer size ',uart1.any(), 'bytes\n')
             print("2")
-        except Exception:
-            print("R",end='')
-            #print("Error recieving")
-            #error_msg = (100, mac_id, 11, 0, 0, 0, 0, 0, 0, 0)
-            #packet = data_packing(send_packet_format, error_msg)
-            #s = reconnect_socket(s)
-            #s.send(packet)
-
-            continue
+        except OSError as e:
+            if e.args[0] in [11, 110, 104]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+                # No data or connection lost
+                print("No data")
+                continue
+            else:
+                print("Socket error:", e)
+                try:
+                    s.close()
+                except:
+                    pass
+                s = connect_socket(host, port)  # your reconnect function
+                continue
 
         if req:
             try:
@@ -649,14 +720,14 @@ while True:
                     msg = (99, mac_id, 19, Rate, Rate2, 0, 0, 0, 0, 0)
                     rate_packet = data_packing(send_packet_format, msg)
                     try:
-                        s.send(rate_packet)
+                        #s.send(rate_packet)
                         wdt.feed()
                         print('buffer size ',uart1.any(), 'bytes\n')
 
                         print("data sent")
                     except Exception as e:
                         print("error in rate calc")
-                        s = reconnect_socket()
+                        #s = reconnect_socket()
                         break  # Exit inner loop
 
     except Exception as e:
@@ -671,3 +742,11 @@ while True:
         #time.sleep(1)
         #s = reconnect_socket(s)
         continue
+
+        
+        
+
+
+
+
+
