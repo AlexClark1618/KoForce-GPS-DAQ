@@ -1,0 +1,19 @@
+Info Packet: 1
+
+General Data Code Signature: 99
+
+General Error Code Signature : 100
+
+Rate Subsignature = (---, ---, 100, ...)
+Sub-signatures:
+    Error in main loop = 1
+    Send data Error = 2
+    Receive data Error = 3
+    Error in maxRxBuf = 4
+    Error in findUBX_HDR = 5
+    Error in request function = 6
+    Error in readData function = 7
+    Error unpacking = 8
+    Error in send data = 9 #Redundant
+    Error in Rate calc = 10
+    ESP Restart = 11
