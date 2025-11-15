@@ -1,10 +1,17 @@
-#Borehole
+#Veto
+
+#Updated- 11/13/25 (Alex)
+
+#Changelog:
+    #General cleanup
+    #More info packets
+    #Improved send function to handle errors
+    #Added timeout for send
 
 import socket
 import ustruct
 import time
 import network
-import select
 from machine import UART, Pin, WDT
 import time
 import gc
@@ -17,12 +24,59 @@ uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
 uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=8192*2)
 
-
 time.sleep(0.1)
-#while(1):
-#NNC=10
 numMeas=1
+# ---------- Wifi and Socket Stuff ----------
+def con_to_wifi(ssid, password):
+    if wlan.isconnected():
+        wlan.disconnect()
+        time.sleep(0.1)
+    
+    while not wlan.isconnected():
+        try:
+            print("Connecting to Wi-Fi...")
+            wlan.connect(ssid, password)
+            while not wlan.isconnected():
+                time.sleep(1)
+            print("Wi-Fi connected.")
+            return wlan.ifconfig()
+        except OSError as e:
+            print(f"Connection attempt failed: {e}")
+            
+send_packet_format = "!iiiiiiiiii"
 
+def data_packing(packet_format: str, msg: tuple):
+    try:
+        packet = ustruct.pack(packet_format, 
+            msg[0],#inst,            # char (1 byte)
+            msg[1],#ID,
+            msg[2],#RF,              # char (1 byte)
+            msg[3],#cal,              # uint8 (1 byte)
+            msg[4],#ch,          # uint8 (1 byte)
+            msg[5],#w_num,      	 # uint32 (4 bytes) #Q for 8 byte uint64
+            msg[6],#ms,         # uint32 (4 bytes)
+            msg[7],#sub_ms,
+            msg[8],#event_num                  # uint32 (4 bytes)
+            msg[9] #count
+        )
+        
+        return packet
+    
+    except Exception:
+        print("Error in data packing")
+
+def connect_socket(host, port):
+    while True:
+        try:
+            s = socket.socket()
+            s.connect((host, port))
+            print("Socket connected.")
+            return s
+        except Exception as e:
+            print("Failed to connect socket:", e)
+            time.sleep(1)
+
+# ---------- GPS Functions ----------
 def clearRxBuf():
     while uart1.any():
         print('buffer cleared of ',uart1.any(), 'bytes\n')
@@ -36,52 +90,6 @@ def findUBX_HDR():
     #        C   ID  RF Cal  ch wno  Ms Sub cnt
     #request=(0,  0,  0,  0,  0,  0,  0,  0,  0)
 
-#Unecessary for Borehole
-"""def request(wno,Ms,subMs):
-    gc.collect()
-    res=(0,0,0)
-    while res[1] < Ms+1: #Exceed the time of interest by at least 1 ms    
-        res=readData(1)
-        if res[0] != 0:
-            #print(res[0] == 0)
-            print ('read Cal Data',res)
-            if (abs(Ms - res[1]) > 1000) | (res[0] != wno) :
-                print('Unreasonable request')
-                return([(0,0,0,0,0,0)])
-    lastC=len(countCal)-1
-    lastR=len(countRaw)-1
-    #Find upper index in raw data
-    for i in range(lastR,-1,-1):
-        if countRaw[i]==countCal[lastC]:
-            break
-    rawIndex2=i
-    #Find lower index in raw data
-    for i in range(lastR-1,-1,-1):
-        if countRaw[i]==countCal[lastC-1]:
-            break
-    rawIndex1=i
-    
-    tCal2=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
-    tCal1=towMsCal[lastC-1]*1000000+(towSubMsCal[lastC-1])
-    tRaw2=towMsRaw[rawIndex2]*1000000+int(towSubMsRaw[rawIndex2]/1000)
-    tRaw1=towMsRaw[rawIndex1]*1000000+int(towSubMsRaw[rawIndex1]/1000)
-        
-    #slope = (tCal2-tCal1)/(tRaw2-tRaw1)
-    #print('slope', slope)
-    intercept = tCal2-tRaw2
-    timesOfInterest=[]
-    for i in range(rawIndex1,rawIndex2+1):
-        tRaw=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
-        print(towMsRaw,towSubMsRaw,intercept,tRaw)
-        res=tRaw+intercept
-        sec=int(res/1000000000)
-        ns=res-sec*1000000000
-        ms=int(ns/1000000)
-        Ms=sec*1000+ms
-        SubMs=res-Ms*1000000
-        timesOfInterest.append((RFRaw[i],1,chRaw[i],wno,Ms,SubMs))
-    return(timesOfInterest)
-"""
 def readData(det):
 #det: 0 == BH and 1 == AS
 #     towMsR=0
@@ -232,80 +240,22 @@ def readData(det):
             ]
         else:
             return((0,0,0))
-# ---------- Functions ----------
-delay=1
-def con_to_wifi(ssid, password):
-    '''
-    if not wlan.isconnected():
-        print("Connecting to Wi-Fi...")
-        wlan.connect(ssid, password)
-        while not wlan.isconnected():
-            time.sleep(1)
-    print("Wi-Fi connected.")
-    return None
-    '''
-    if wlan.isconnected():
-        wlan.disconnect()
-        time.sleep(0.1)
-    
-    while not wlan.isconnected():
-        try:
-            print("Connecting to Wi-Fi...")
-            wlan.connect(ssid, password)
-            while not wlan.isconnected():
-                time.sleep(1)
-            print("Wi-Fi connected.")
-            return wlan.ifconfig()
-        except OSError as e:
-            print(f"Connection attempt failed: {e}")
-            
-packet_format = "!iiiiiiiiii"
-def data_packing(packet_format: str, msg: tuple):
-    packet = ustruct.pack(packet_format, 
-        msg[0],#inst,            # char (1 byte)
-        msg[1],#ID,
-        msg[2],#RF,              # char (1 byte)
-        msg[3],#cal,              # uint8 (1 byte)
-        msg[4],#ch,          # uint8 (1 byte)
-        msg[5],#w_num,      	 # uint32 (4 bytes) #Q for 8 byte uint64
-        msg[6],#ms,         # uint32 (4 bytes)
-        msg[7],#sub_ms,
-        msg[8],#event_num                  # uint32 (4 bytes)
-        msg[9] #count
-    )
-    
-    return packet
 
-def connect_socket(host, port):
-    s = socket.socket()
-    try:
-        s.connect((host, port))
-        print("Socket connected.")
-        return s
-    except OSError as e:
-        print("Failed to connect socket:", e)
-        return None
 
 # ---------- Wi-Fi Setup ---------
-#ssid = 'TP-Link_FB80'
-#password = 'Beau&River'
-
 ssid = 'ONet'
 password = ''
 
-#These can be moved to the main wifi function, but I thinks its more versitile to define them as globals
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
 
 con_to_wifi(ssid, password)
 full_mac = wlan.config('mac')
 mac_id = wlan.config('mac')[-1]  # last byte of MAC
-ip, subnet, gateway, dns = wlan.ifconfig()
-print(ip)
-ip_last_byte = int(ip.split('.')[-1])
-#print("ESP IP:", ip_last_byte)
-#print(full_mac)
 print("Mac ID:",mac_id)
+ip, subnet, gateway, dns = wlan.ifconfig()
+ip_last_byte = int(ip.split('.')[-1])          
+print("ESP IP:", ip_last_byte)
 
 # ---------- Connecting to Server ----------
 #HOST = '192.168.0.93' #Home
@@ -314,131 +264,121 @@ HOST = '134.69.218.243' #Karbon Computer
 PORT = 12345
 
 s = connect_socket(HOST,PORT)
+s.settimeout(.1)
 
-# ---------- For peeking ----------
-#poller = select.poll()
-#poller.register(s, select.POLLIN)
+# ---------- Send and Recieve Functions ----------
+def send_data(d):
+    global s
+    
+    try:
+        data = s.send(d)
+        return data 
+
+    except OSError as e:
+        if e.args[0] in [11, 110, 104]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+            # No data or connection lost
+            print("No data")
+            
+        else:
+            print("Socket error:", e)
+            try:
+                s.close()
+            except:
+                pass
+            s = connect_socket(HOST, PORT)  # your reconnect function
+            
+def recieve(num_bytes):
+    global s
+    try:
+
+        data = s.recv(num_bytes) 
+
+        if data:
+            print("Wifi RX buffer cleared of:", len(data), "bytes")
+
+    except OSError as e:
+        if e.args[0] in [11, 110, 104]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+            # No data or connection lost
+            print("No data to clear")
+            
+        else:
+            print("Socket error:", e)
+            try:
+                s.close()
+            except:
+                pass
+            s = connect_socket(HOST, PORT)  # your reconnect function
+
+# ---------- Info Packets ----------
+error_msg = (100, mac_id, 15, time.ticks_ms(), ip_last_byte, 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
+packet = data_packing(send_packet_format, error_msg)
+send_data(packet)
+
+time.sleep(0.1)
+
+info_msg = (1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
+packet = data_packing(send_packet_format, info_msg)
+send_data(packet)
 
 # ---------- Main Loop ----------
 clearRxBuf()
 
 event_num = 0 #Keeps track of borehole events (could be moved to server)
 
-wdt = WDT(timeout=50000)  # 50 seconds
-
-error_msg = (100, mac_id, 15, 0, time.ticks_ms(), ip_last_byte, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
-packet = data_packing(packet_format, error_msg)
-s.send(packet)
-
-time.sleep(0.1)
-
-info_msg = (1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
-packet = data_packing(packet_format, info_msg)
-s.send(packet)
+wdt = WDT(timeout=20000)  # 5 seconds
 
 while True:
-    #Checks for wifi disconnections. (May want to move this to an exception handle)
-    if not wlan.isconnected():
-        con_to_wifi(ssid, password)
-    
-    #Checks if activity of socket
-#    events = poller.poll(0)
-#     if events:
-#         req = s.recv(1024)
-#         print("You got data!")
-
-    #Reading data from gps
-    # RFRaw=[]
-    # chRaw=[]
-    # countRaw=[]
-    # countCal=[]
-    # towMsRaw=[]
-    # towMsCal=[]
-    # towSubMsRaw=[]
-    # towSubMsCal=[]
-    
-    res = (0,0,0)
-    while res[0] == 0:
-        #print(res)
-        res = readData(0)
-        wdt.feed()
-
-    print('res:', res)
-    timesOfInterest = res
-    ID=mac_id
-    #print(timesOfInterest)
-    toSend=[]
-    for i in range(len(timesOfInterest)):
-        #print(timesOfInterest[i][0])
-        #(0, timeValid, ch, wnoR, towMsR, towSubMsR, count),
-
-
-        toi = (99, ID,
-               timesOfInterest[i][0],
-               timesOfInterest[i][1],
-               timesOfInterest[i][2],
-               timesOfInterest[i][3],
-               timesOfInterest[i][4],
-               timesOfInterest[i][5],
-               event_num,
-               timesOfInterest[i][6],
-        )
-        toSend.append(toi)
-    '''
-    #Test data
-    inst = 0            
-    ID = 0
-    RF = 0               
-    cal = 0             
-    ch = 0         
-    w_num = int(time.time())  
-    ms = int(time.time())      
-    sub_ms = int(time.time())
-    '''
-    ###Jean-Luc's Request function goes here###
-        #We will expect to send 4 packets each is a tuple in a larger list. This will represent the rise and fall 
-        #of the signal and encoding. Should edit the package function to pack these tuples 
-
-    for tup in toSend:
-        inst = tup[0]           
-        ID = tup[1]
-        RF = tup[2]              
-        cal = tup[3]               
-        ch = tup[4]
-#       timeValid = tup[5]
-        w_num = tup[5]    
-        ms = tup[6]       
-        sub_ms = tup[7]
-        event_num = tup[8] #Unnecessary 
-        count = tup[9]
+    try:
+        #Checks for wifi disconnections. (May want to move this to an exception handle)
+        if not wlan.isconnected():
+            con_to_wifi(ssid, password)
         
-        send_msg = (inst, ID, RF, cal, ch, w_num, ms, sub_ms, event_num, count)
-        try:
-            packet = data_packing(packet_format, send_msg)
-            data = s.send(packet)
-            wdt.feed()
-
-            gc.collect()
-            print(f'Bytes sent: {data}') #Prints byte size
+        res = (0,0,0)
+        while res[0] == 0:
+            res = readData(0)
+            #wdt.feed()
+            print(res)
+        #print('res:', res)
+        timesOfInterest = res
+        ID=mac_id
         
-        #Attempts to handle socket disconnecting. Reconnects and then resumes sending data.
-        except OSError as e: 
-            print("Socket error:", e)
-            try:
-                poller.unregister(s)
-                s.close()
-            except:
-                pass
+        for i in range(len(timesOfInterest)):
+            inst = 99           
+            ID = mac_id
+            RF = timesOfInterest[i][0]              
+            cal = timesOfInterest[i][1]               
+            ch = timesOfInterest[i][2]           
+            w_num = timesOfInterest[i][3]   
+            ms = timesOfInterest[i][4]      
+            sub_ms = timesOfInterest[i][5]
+            event_num = event_num 
+            count = timesOfInterest[i][6] 
+
+            msg = (inst, ID, RF, cal, ch, w_num, ms, sub_ms, event_num, count)
             
-            time.sleep(1)
-            s = connect_socket(HOST, PORT)
-            if s:
-                poller.register(s, select.POLLIN)
+            packet = data_packing(send_packet_format, msg)
+
+            try:
+                data = send_data(packet) 
+                recieve(1024) #Keeps socket empty
+                wdt.feed()
+                event_num -=1 
+
+                #gc.collect()
+                print(f'Bytes sent: {data}') #Prints byte size
+            
+            except Exception as e:
+                print("Send error:", e)
                 continue
 
-        event_num -=1 
+    except Exception as e:
+        print("Error in main loop", e)
+        error_msg = (100, mac_id, ip_last_byte, 14, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, error_msg)
+        send_data(packet)
+        continue
         
-        #time.sleep(1)
+    
     
 
     
