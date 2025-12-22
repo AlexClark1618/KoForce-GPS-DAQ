@@ -6,5 +6,5 @@ Collaborators:
 	Jean-Luc Geaverau, Alex Clark, Tim Healy
 
 Organizations:
-	Occidental College
+	Occidental College,
 	KoBold Metals
