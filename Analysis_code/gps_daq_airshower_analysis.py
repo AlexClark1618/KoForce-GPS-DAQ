@@ -12,6 +12,9 @@ from collections import Counter
     #Coincidences with the borehole
     #Summary file
 
+    #1/16/25:
+    #Look at rates sent to data file
+    #Split veto and BH coincidence events
 
 
 def folder_reader(folder_path):
@@ -183,9 +186,8 @@ def read_data(data_file, single_file):
     print(f'ESP Instance Counter:\n BH:{len(BH_list)}\n Veto:{len(Veto_list)}\n Det1:{len(det1_list)}\n Det2:{len(det2_list)}\n Det3:{len(det3_list)}\n Det4:{len(det4_list)}\n Det5:{len(det5_list)}\n Det6:{len(det6_list)}\n Det7:{len(det7_list)}\n Det8:{len(det8_list)}\n Det9:{len(det9_list)}\n Det10:{len(det10_list)}\n')
 
     return len(unique_esp_macs)
-#read_data(DATA_FILE) #Call read data with joined file 
 
-#print(f'ESP Instance Counter:\n BH:{len(BH_list)}\n Det1:{len(det1_list)}\n Det2:{len(det2_list)}\n Det3:{len(det3_list)}\n Det4:{len(det4_list)}\n Det5:{len(det5_list)}\n Det6:{len(det6_list)}\n Det7:{len(det7_list)}\n Det8:{len(det8_list)}\n Det9:{len(det9_list)}\n Det10:{len(det10_list)}\n')
+#read_data(DATA_FILE) #Call read data with joined file 
 
 ### Live Time Analysis ###
 def live_time_calculator():
@@ -273,7 +275,7 @@ def live_time_calculator():
     det10_ch0, det10_ch1 = ch_grouper(det10_list)
 
     det10_ch0_timestamps = np.array([timestamp_ns(tup) for tup in det10_ch0 if tup[2]==0]) #Only Risetimes
-    det10_ch1_timestamps = np.array([timestamp_ns(tup) for tup in det10_ch1 if tup[2]==1]) #Only Risetimes
+    det10_ch1_timestamps = np.array([timestamp_ns(tup) for tup in det10_ch1 if tup[2]==1]) 
 
     det10_lt_packet = [det10_ch0_timestamps, det10_ch1_timestamps]
 
@@ -791,7 +793,7 @@ def tot_plotter(graph):
             
             plt.clf()    
 
-### Coincidence Analysis    
+### Coincidence Analysis ###   
 def coincidence_finder():
 
     ###Convert all data to nanosecond timestamps###
@@ -818,7 +820,7 @@ def coincidence_finder():
     # --- Coincidence detection ---
     targets = [48, 16]        # ESP 48
     Veto_Δt = 4000      # Coincidence within 1us
-    BH_Δt = 500      # Coincidence within 1us
+    BH_Δt = 400      # Coincidence within 1us
     coincidences = []
 
     for target in targets:
@@ -845,7 +847,7 @@ def coincidence_finder():
                     involved.append(dev)
             if len(involved) >= 2:
                 coincidences.append((t, involved))
-
+    print(coincidences)
     print(f"Found {len(coincidences)} coincidences with ≥2 devices")
     for t, devs in coincidences[:10]:
         print(f"t={t} -> devices={devs}")
@@ -860,7 +862,7 @@ def coincidence_finder():
     coin = 0
     for num, freq in sorted(counts.items()):
         print(f"{num} devices: {freq} coincidences")
-        if num >= 5: #5 fold
+        if num >= 4: #5 fold
             coin+=freq
     print(coin)
     print(coin/len(folder_files_list))    
@@ -871,8 +873,9 @@ def coincidence_plotter():
     counts, coin = coincidence_finder()
 
     plt.bar(counts.keys(), counts.values())
-    plt.title(f"GPS DAQ Coincidences\n {coin} 5+ Coincidences\n Coincidence Rate Per Hour=~{coin/len(folder_files_list)}")
+    plt.title(f"GPS DAQ Coincidences\n {coin} 4+ Coincidences\n Coincidence Rate Per Hour=~{coin/len(folder_files_list)}")
     plt.xlabel("Number of Detectors Involved in Coincidence Event")
+    plt.yscale('log')
     plt.ylabel("Frequency")
 
     filename = f"{run_num} GPS_DAQ_Coincidences.png"
@@ -910,7 +913,7 @@ def coincidence_per_file(div):
         color = cm.tab10(i % 10)
         
         plt.scatter(i+1, coins_per_file[i][0], color = color, marker = 'o', label = 'Total' if i == 0 else "")
-        plt.scatter(i+1, coins_per_file[i][1], color = color, marker = 'x', label = '5-Fold' if i == 0 else "")
+        plt.scatter(i+1, coins_per_file[i][1], color = color, marker = 'x', label = '4-Fold' if i == 0 else "")
 
     plt.title(f"{run_num} Coincidences Per File")
     plt.xlabel("File Cycle Number")
@@ -933,10 +936,16 @@ def integrity_plotter(cycle_start, cycle_end, data):
     for i in range(10):
         axes[i].plot(cycles, data_arr[:, i])
         axes[i].set_ylabel(f"Det {i+1}")
+        axes[i].set_ylim(0.95, 1.05)
 
     axes[-1].set_xlabel("Cycle #")
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.tight_layout(rect=[0, 0, 1, 0.1])
     fig.suptitle(f"Detector Integrity per Cycle | {run_num}", fontsize=10, y=0.98)
+
+    filename = f"{run_num} Data_Integrity_Per_Cycle.png"
+    filepath = os.path.join(save_folder, filename)
+    plt.savefig(filepath, dpi=300)
+
     plt.show()
 
 def rate_plotter(cycle_start, cycle_end, data):
@@ -957,8 +966,13 @@ def rate_plotter(cycle_start, cycle_end, data):
             axes[i].set_ylabel(f"Det {i-1}")
 
     axes[-1].set_xlabel("Cycle #")
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.tight_layout(rect=[0, 0, 1, 0.1])
     fig.suptitle(f"Detector Rate per Cycle | {run_num}", fontsize=10, y=0.98)
+
+    filename = f"{run_num} Detector_Rate_Per_Cycle.png"
+    filepath = os.path.join(save_folder, filename)
+    plt.savefig(filepath, dpi=300)
+
     plt.show()
 
 def gps_daq_health_variables(cycle_start, cycle_end, plotting):
@@ -968,9 +982,11 @@ def gps_daq_health_variables(cycle_start, cycle_end, plotting):
     rate_list_per_cycle = []
     integrity_list_per_cycle = []
 
-    open("cycle_health_stats.txt", 'w').close()
+    cycle_health_stats_path = os.path.join(save_folder, "cycle_health_stats.txt")
 
-    for file in folder_files_list[cycle_start-1: cycle_end]:
+    open(cycle_health_stats_path, 'w').close()
+
+    for file in folder_files_list:#[cycle_start-1:cycle_end]:
         
         print(file)
 
@@ -979,7 +995,7 @@ def gps_daq_health_variables(cycle_start, cycle_end, plotting):
 
         read_data(file, True)
 
-        BH_request_count = sum(1 for tup in BH_list if tup[2]==0)
+        BH_request_count = sum(1 for tup in BH_list if tup[2]==0 and tup[4]==0)
         BH_file_live_time = BH_request_count * 0.002
         BH_rate = BH_request_count / 3600
 
@@ -1087,7 +1103,7 @@ def gps_daq_health_variables(cycle_start, cycle_end, plotting):
 
         )
 
-        with open("cycle_health_stats.txt", 'a') as hs:
+        with open(cycle_health_stats_path, 'a') as hs:
             hs.write(health_msg)
             hs.write("\n##############################################################################################################################\n\n")
 
@@ -1109,7 +1125,7 @@ if __name__ == "__main__":
     max = 99
     
     #Run ID and folder paths
-    run_num = "Run 52"
+    run_num = "Run 75"
 
     save_folder_path = 'C:\\Users\\alexc\\Desktop\\KoForce GPS DAQ\\ESP 32\\Graphs\\'
     save_folder = os.path.join(save_folder_path, run_num)
@@ -1121,19 +1137,18 @@ if __name__ == "__main__":
     data_folder_path = 'C:\\Users\\alexc\\Desktop\\KoForce GPS DAQ\\ESP 32\\GPS Data\\'
     data_folder = os.path.join(data_folder_path, run_num)
 
-    #file_joiner()
-
     DATA_FILE = 'C:\\Users\\alexc\\Desktop\\KoForce GPS DAQ\\ESP 32\\joined_file.txt' #Automatically use joined file
 
     file_joiner()
     read_data(DATA_FILE, False) #Call read data with joined file
 
-    #live_time_plotter(False)
-    #period_plotter(False)
-    #tot_plotter(False)
+    live_time_plotter(False)
+    period_plotter(False)
+    tot_plotter(False)
+    
     coincidence_plotter()
-    #coincidence_per_file(10)
-    #gps_daq_health_variables(1, 124, True)
+    coincidence_per_file(1)
+    gps_daq_health_variables(1, 44, True)
 
 """
 def file_reader_plotter(DATA: list, Mode):
