@@ -936,7 +936,7 @@ def integrity_plotter(cycle_start, cycle_end, data):
     for i in range(10):
         axes[i].plot(cycles, data_arr[:, i])
         axes[i].set_ylabel(f"Det {i+1}")
-        axes[i].set_ylim(0.95, 1.05)
+        axes[i].set_ylim(0.98, 1.02)
 
     axes[-1].set_xlabel("Cycle #")
     plt.tight_layout(rect=[0, 0, 1, 0.1])
@@ -975,12 +975,76 @@ def rate_plotter(cycle_start, cycle_end, data):
 
     plt.show()
 
+def real_null_counter_plotter(cycle_start, cycle_end, data1, data2):
+    fig, axes = plt.subplots(10, 1, sharex=True)
+
+    data_arr1 = np.array(data1) #real
+    data_arr2 = np.array(data2) #null
+
+    data_arr3 = data_arr1/data_arr2
+    cycles = np.arange(cycle_start, cycle_end+1)
+  
+    for i in range(5):
+        axes[2*i].scatter(cycles, data_arr1[:, i])
+        axes[2*i].scatter(cycles, data_arr2[:, i])
+
+        axes[2*i].set_ylabel(f"Det {i+1}")
+        axes[2*i].set_ylim(4000, 12000)
+    
+    for i in range(5):
+        axes[2*i+1].scatter(cycles, data_arr3[:, i])
+        axes[2*i+1].set_ylabel(f"Det {i+1}")
+
+ 
+    axes[-1].set_xlabel("Cycle #")
+    plt.tight_layout(rect=[0, 0, 1, 0.1])
+    fig.suptitle(f"Real vs Null Count per Cycle (Part 1) | {run_num}", fontsize=10, y=0.98)
+
+    filename = f"{run_num} Real_Null_Data_Per_Cycle_(Part1).png"
+    filepath = os.path.join(save_folder, filename)
+    plt.savefig(filepath, dpi=300)
+
+    plt.show()
+
+    ##############################################
+
+    fig, axes = plt.subplots(10, 1, sharex=True)
+
+    data_arr1 = np.array(data1)
+    data_arr2 = np.array(data2)
+    cycles = np.arange(cycle_start, cycle_end+1)
+    
+    for i in range(5):
+        axes[2*i].scatter(cycles, data_arr1[:, i+5])
+        axes[2*i].scatter(cycles, data_arr2[:, i+5])
+
+        axes[2*i].set_ylabel(f"Det {i+6}")
+        axes[2*i].set_ylim(4000, 12000)
+    
+    for i in range(5):
+        axes[2*i+1].scatter(cycles, data_arr3[:, i+5])
+        axes[2*i+1].set_ylabel(f"Det {i+6}")
+ 
+    axes[-1].set_xlabel("Cycle #")
+    plt.tight_layout(rect=[0, 0, 1, 0.1])
+    fig.suptitle(f"Real vs Null Count per Cycle (Part 2) | {run_num}", fontsize=10, y=0.98)
+
+    filename = f"{run_num} Real_Null_Data_Per_Cycle_(Part2).png"
+    filepath = os.path.join(save_folder, filename)
+    plt.savefig(filepath, dpi=300)
+
+    plt.show()
+
 def gps_daq_health_variables(cycle_start, cycle_end, plotting):
 
     folder_files_list= folder_reader(data_folder)
 
     rate_list_per_cycle = []
     integrity_list_per_cycle = []
+    real_data_list_per_cycle = []
+    null_data_list_per_cycle = []
+
+
 
     cycle_health_stats_path = os.path.join(save_folder, "cycle_health_stats.txt")
 
@@ -1113,9 +1177,16 @@ def gps_daq_health_variables(cycle_start, cycle_end, plotting):
         rate_tup = [BH_rate, Veto_rate, det1_rate, det2_rate, det3_rate, det4_rate, det5_rate, det6_rate, det7_rate, det8_rate, det9_rate, det10_rate]
         rate_list_per_cycle.append(rate_tup)
 
+        real_data_tup = [det1_data_count, det2_data_count, det3_data_count, det4_data_count, det5_data_count, det6_data_count, det7_data_count, det8_data_count, det9_data_count, det10_data_count]
+        real_data_list_per_cycle.append(real_data_tup)
+
+        null_data_tup = [det1_null_count, det2_null_count, det3_null_count, det4_null_count, det5_null_count, det6_null_count, det7_null_count, det8_null_count, det9_null_count, det10_null_count]
+        null_data_list_per_cycle.append(null_data_tup)
+
     if plotting is True:
         integrity_plotter(cycle_start, cycle_end, integrity_list_per_cycle)
         rate_plotter(cycle_start, cycle_end, rate_list_per_cycle)
+        real_null_counter_plotter(cycle_start, cycle_end, real_data_list_per_cycle, null_data_list_per_cycle)
         #print(health_msg)
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -1139,15 +1210,15 @@ if __name__ == "__main__":
 
     DATA_FILE = 'C:\\Users\\alexc\\Desktop\\KoForce GPS DAQ\\ESP 32\\joined_file.txt' #Automatically use joined file
 
-    file_joiner()
-    read_data(DATA_FILE, False) #Call read data with joined file
+    #file_joiner()
+    #read_data(DATA_FILE, False) #Call read data with joined file
 
-    live_time_plotter(False)
-    period_plotter(False)
-    tot_plotter(False)
+    #live_time_plotter(False)
+    #period_plotter(False)
+    #tot_plotter(False)
     
-    coincidence_plotter()
-    coincidence_per_file(1)
+    #coincidence_plotter()
+    #coincidence_per_file(1)
     gps_daq_health_variables(1, 44, True)
 
 """
