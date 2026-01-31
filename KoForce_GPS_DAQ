@@ -14,6 +14,8 @@ import errno
     #11/14/25- Added socket cleanup function to remove deadsockets
     #Better handled nonblocking send and receive functions with appropriate error catching. SHould hopefully reduce errors.
     #Borehole and veto are broadcasting to eachother filling up TCP socket. Added a recv in each esp code to clear the buffer. Too complicated (as I see) to try and deal with it server side.
+    #12/2/25- Event numbers now generated on server
+
 
 HOST = '0.0.0.0'
 PORT = 12345
@@ -21,40 +23,62 @@ PORT = 12345
 # Data Format: 
 PACKET_FORMAT = "!iiiiiiiiii"
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
-
+            
 class RotatingFileWriter:
-    def __init__(self, base_name="output", ext=".txt", time_length = 1, gzip_files=False, header = ""):
-        self.base_name = base_name
+    def __init__(self, base_folder_name = "folder", base_file_name="file", ext=".txt", time_length = 10, gzip_files=False, header = ""):
+        self.base_data_storage_folder = 'GPS Data'
+        self.base_folder_name = base_folder_name
+        self.base_file_name = base_file_name
         self.ext = ext
         self.time_length = time_length
         self.gzip_files = gzip_files
         self.date = datetime.now().strftime("%Y%m%d")
-        self.run_number = self._get_next_run_number()
+        self.folder_run_number = self._get_next_run_number()
+        #self.run_number = self._get_next_run_number()
         self.cycle_number = 1
         
         self.header = header
+        self.folder_dir = self.open_new_folder()
+        self.connection_log = os.path.join(self.folder_dir, "connection_log.txt")
+        self.error_log = os.path.join(self.folder_dir, "error_log.txt")
+        self.unique_esp_log = os.path.join(self.folder_dir, "unique_esp_log.txt")
         self.open_new_file()
 
     def _get_next_run_number(self):
         """Find the next available run number across all files."""
         run_pattern = re.compile(
-            rf"{self.base_name}_(\d+)_run(\d+)_cycle\d+{self.ext}$"
+            rf"{self.base_folder_name}_(\d+)_(\d+)"
         )
         max_run = 0
-        for fname in os.listdir("."):
-            match = run_pattern.match(fname)
-            if match:
-                run_num = int(match.group(2))
-                max_run = max(max_run, run_num)
+        for folder_name in os.listdir(self.base_data_storage_folder):
+            match = run_pattern.match(folder_name)
+            folder_path = os.path.join(self.base_data_storage_folder, folder_name)
+
+            if os.path.isdir(folder_path):
+                if match:
+                    run_num = int(match.group(1))
+                    max_run = max(max_run, run_num)
         return max_run + 1
+    
+    def open_new_folder(self):
+        folder_name = (
+            f"{self.base_folder_name}_{self.folder_run_number}_{self.date}")
+
+        folder_path = os.path.join(self.base_data_storage_folder, folder_name)
+        os.mkdir(folder_path)
+
+        return folder_path
 
     def open_new_file(self):
+
         if hasattr(self, "file") and self.file:
             self._close_and_gzip()
         self.filename = (
-            f"{self.base_name}_{self.date}_run{self.run_number}_cycle{self.cycle_number}{self.ext}"
+            f"{self.base_file_name}_{self.date}_run{self.folder_run_number}_cycle{self.cycle_number}{self.ext}"
         )
-        self.file = open(self.filename, "w", buffering = 1)#buffering=1024*1024)
+        
+        self.file_path = os.path.join(self.folder_dir, self.filename)
+        self.file = open(self.file_path, "w", buffering = 1)#buffering=1024*1024)
         self.start_time = datetime.now()
 
         if self.header:
@@ -65,14 +89,14 @@ class RotatingFileWriter:
         time.sleep(1)
 
     def _close_and_gzip(self):
-        """Close the current file and optionally gzip it."""
         self.file.close()
+
         if self.gzip_files:
-            gz_filename = self.filename + ".gz"
-            with open(self.filename, 'rb') as f_in, gzip.open(gz_filename, 'wb') as f_out:
+            gz_path = self.file_path + ".gz"
+            with open(self.file_path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
-            os.remove(self.filename)  # remove original uncompressed file
-            print(f"[INFO] Compressed {self.filename} -> {gz_filename}")
+            os.remove(self.file_path)
+            print(f"[INFO] Compressed {self.file_path} -> {gz_path}")
 
     def write(self, data: str):
         
@@ -92,13 +116,17 @@ def cleanup_client_socket(sock, addr, sockets, clients):
     if sock in clients:
         del clients[sock]
     sock.close()
-    with open(connection_log, 'a') as log:
+    with open(writer.connection_log, 'a') as log:
         log.write(f"{time.time()}: Disconnected from {addr}\n")
     print(f"[SERVER] Dead client socket removed: {addr}")
 
+def ns_timestamp(ms, sub_ms):
+
+    return (ms*1000000 + sub_ms)
+
 def run_server():
 
-    #Info Logs
+    '''#Info Logs
     with open(connection_log, 'a') as log:
         log.write(f"\n--- Restart at {datetime.now()} ---\n")
 
@@ -107,7 +135,7 @@ def run_server():
 
     with open(unique_esp_log, 'a') as log:
         log.write(f"\n--- Restart at {datetime.now()} ---\n")
-
+    '''
     # Create the server socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -123,6 +151,8 @@ def run_server():
     last_time = 0
     esp_unique_ID_list = []
 
+    event_num_BH = 1
+    event_num_veto = -1
 
     while True:
 
@@ -136,7 +166,7 @@ def run_server():
             if s is server: #Deals with server connects to client sockets
                 try:
                     client_socket, addr = server.accept()
-                    time.sleep(1)
+                    time.sleep(0.1)
                     client_socket.setblocking(False)
                     sockets.append(client_socket)
                     clients[client_socket] = { #Dictionary of client raw data and addresses
@@ -144,7 +174,7 @@ def run_server():
                         "addr": addr
                     }
                     print(f"[SERVER] New ESP32 connected from {addr}")
-                    with open(connection_log, 'a') as log:
+                    with open(writer.connection_log, 'a') as log:
                         log.write(f"{time.time()}: Reconnected from {addr}\n")
 
                 except OSError as e:
@@ -153,7 +183,7 @@ def run_server():
                         continue
                     else:
                         print(f"[SERVER] Error accepting connection: {addr}; {e}")
-                        with open(error_log, 'a') as f:
+                        with open(writer.error_log, 'a') as f:
                             f.write(f"[SERVER] Error accepting connection: {addr}; {e}\n")
                         continue
 
@@ -162,6 +192,9 @@ def run_server():
                 client_addr = client_info["addr"] if client_info else None
                 try:
                     data = s.recv(1024)
+                    if not data:  # empty = client closed connection
+                        cleanup_client_socket(s, client_addr, sockets, clients)
+                        continue
 
                 except OSError as e:
                     if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
@@ -169,10 +202,12 @@ def run_server():
                         continue
                     else: #ETimedout isnt being used, ECONNRESET means client coneection was disconnected
                         print(f"[SERVER] Error Receiving from {client_addr}: {e}")
-                        with open(error_log, 'a') as f:
+                        print("Debug",  s.fileno())
+                        with open(writer.error_log, 'a') as f:
                             f.write(f"[SERVER] Error Receiving from {client_addr}: {e}\n")
 
-                        cleanup_client_socket(s, addr, sockets, clients)
+
+                        cleanup_client_socket(s, client_addr, sockets, clients)
                         continue
 
                 clients[s]["buffer"].extend(data)
@@ -184,28 +219,99 @@ def run_server():
 
                     #Unpacks data
                     inst, ID, RF, Cal, ch, w_num, ms, sub_ms, event_num, count = struct.unpack(PACKET_FORMAT, packet)
-                    
-                    if ID not in esp_unique_ID_list:
-                        esp_unique_ID_list.append(ID)
-                        with open(unique_esp_log, 'a') as f:
-                            f.write(f"{str(ID)}\n")
 
                     if inst == 1: #Info Code
-                        with open(connection_log, 'a') as log:
+                        with open(writer.connection_log, 'a') as log:
                             log.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
 
+                    
                     elif inst == 100: #Error code
                         #writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
-                        with open(error_log, 'a') as f:
+                        with open(writer.error_log, 'a') as f:
                             f.write(f"[ESP]:{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n") # Ignore labels; RF = Error Code"""
+                    
+                    elif inst == 98:
+                        writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
                         
                     elif inst == 99: #Data Code
-                        if ID == 48 or ID == 16:
-                            writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+                        if ID not in esp_unique_ID_list:
+                            esp_unique_ID_list.append(ID)
+                            with open(writer.unique_esp_log, 'a') as f:
+                                f.write(f"{str(ID)}\n")
+
+                        if ID == 48:
+                            #event_num = event_num_BH
+                            #print(type(ms))
+                            #writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
                             #print("BH data written to file")
                             
-                            if ch == 0 and RF == 0: #Measuring time from rise                                
+                            if ch == 0 and RF == 0: #Measuring time from rise  
+                                event_num = event_num_BH
+                                prev_event_num_BH = event_num_BH
+                                writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+
+                                event_num_BH+=1
+
+                                rise_BH_timestamp = ns_timestamp(ms, sub_ms)
+                                
+                                #T0 = time.time()
                                 for client_sock in list(clients.keys()):
+                                    if client_sock != s: #Broadcasts BH timestamp to all other clients except sender
+                                        
+                                        client_info = clients.get(client_sock)
+                                        client_addr = client_info["addr"] if client_info else "Unknown"
+                                        try:
+                                            #time.sleep(0.1) #delay the broadcast by 100ms
+                                            broadcast_format = '!iiiii'
+                                            broadcast_packet = struct.pack(broadcast_format, inst, w_num, ms, sub_ms, event_num)
+                                            broadcast = client_sock.sendall(broadcast_packet)
+                                            #print(f'{(time.time()-T0)*1000}, {client_addr}')
+                                                                                                
+                                            #print(f'Request for data sent:{broadcast}')
+                    
+                                        except OSError as e:
+                                            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                                                # Error can be skipped
+                                                continue
+
+                                            else:  # ECONNRESET or other fatal error
+                                                print(f"[SERVER] Send Error to {client_addr}: {e}")
+                                                with open(writer.error_log, 'a') as f:
+                                                    f.write(f"[SERVER] Send Error to {client_addr}: {e}\n")
+                                                
+                                                cleanup_client_socket(client_sock, client_addr, sockets, clients)
+                                                continue
+
+                            if ch == 0 and RF == 1: 
+
+                                fall_BH_timestamp = ns_timestamp(ms,sub_ms)
+
+                                if abs(rise_BH_timestamp-fall_BH_timestamp)<5000:
+
+                                    event_num = prev_event_num_BH
+                                    writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+
+                            if ch == 1:
+                                writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+
+
+                        elif ID == 16:
+                            #event_num = event_num_veto
+                            #writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+                            #print("BH data written to file")
+                            
+                            if ch == 0 and RF == 0: #Measuring time from rise     
+                                event_num = event_num_veto
+                                prev_event_num_veto = event_num_veto
+                                writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+
+                                event_num_veto-=1
+
+                                rise_veto_timestamp = ns_timestamp(ms, sub_ms)    
+                                                       
+                                for client_sock in list(clients.keys()):
+                                    #if client_sock.fileno() == -1:
+                                        
                                     if client_sock != s: #Broadcasts BH timestamp to all other clients except sender
                                         
                                         client_info = clients.get(client_sock)
@@ -225,19 +331,36 @@ def run_server():
 
                                             else:  # ECONNRESET or other fatal error
                                                 print(f"[SERVER] Send Error to {client_addr}: {e}")
-                                                with open(error_log, 'a') as f:
+                                                with open(writer.error_log, 'a') as f:
                                                     f.write(f"[SERVER] Send Error to {client_addr}: {e}\n")
                                                 
-                                                cleanup_client_socket(client_sock, addr, sockets, clients)
+                                                cleanup_client_socket(client_sock, client_addr, sockets, clients)
                                                 continue
+
+                            if ch == 0 and RF == 1: 
+
+                                fall_veto_timestamp = ns_timestamp(ms,sub_ms)
+
+                                if abs(rise_veto_timestamp-fall_veto_timestamp)<5000:
+
+                                    event_num = prev_event_num_veto
+                                    writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
+                              
 
                         else: #For other clients
                             writer.write(f"{inst}; {ID}; {RF}; {Cal}; {ch}; {w_num}; {ms}; {sub_ms}; {event_num}; {count}\n")
 
                     else:
-                        #writer.write("Unknown Code\n")                        
-                        with open(error_log, 'a') as f:
-                            f.write("Unknown Code\n")
+                        #writer.write("Unknown Code\n")
+                        #    
+                        with open(writer.error_log, 'a') as f:
+                            f.write(f"Unknown Code from client {client_addr}\n")
+
+                        clients[s]["buffer"].clear()
+                        print(f"Buffer cleared from client {client_addr}")
+
+                        break
+
             
 
 if __name__ == "__main__":
@@ -245,17 +368,16 @@ if __name__ == "__main__":
     try:
         while True:
             try:
-                connection_log = 'connection_log.txt'
-                error_log = 'error_log.txt'
-                unique_esp_log = 'unique_esp_log.txt'
-                HEADER = "Req Code; ID; RF; Cal; Ch, W#; t_ow mil; t_ow submil; Event"
-                writer = RotatingFileWriter(base_name="gps_daq", ext=".txt", time_length = 1, header = HEADER) #1 hr long files
+                
+                HEADER = "Req Code; ID; RF; Cal; Ch; W#; t_ow mil; t_ow submil; Event; GPS Count"
+                writer = RotatingFileWriter(base_folder_name= "Run", base_file_name="gps_daq", ext=".txt", time_length = 1, header = HEADER) #1 hr long files
+                
                 run_server()
 
             except Exception as e: #Auto-restart server on any errors
                 print(f"[FATAL ERROR] {e}")
                 traceback.print_exc()
-                with open(error_log, 'a') as f:
+                with open(writer.error_log, 'a') as f:
                     f.write(f"[SERVER] Fatal error: {e}\n{traceback.format_exc()}\n")
                 
                 writer.close()
