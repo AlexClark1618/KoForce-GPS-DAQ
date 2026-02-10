@@ -17,12 +17,16 @@ import time
 import gc
 
 #---------GPS Functions-----------
-UBX_HDR = b'\xb5b'
-RXM_TM=b'\x02\x74'
-TIM_TM2=b'\x0d\x03'
+RXM_TM =(2,116)   #b'\x02\x74'
+TIM_TM2= (13,3)   #b'\x0d\x03'
+NAV_CLOCK= (1,34)       #b'\x01\x22'
+POLL_NAV_CLOCK = b'\xb5\x62\x01\x22\x00\x00\x23\x6a'
+
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
-uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=8192*2)
+rxbuf=8192*2
+uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=rxbuf)
+uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
 
 time.sleep(0.1)
 numMeas=1
@@ -78,173 +82,259 @@ def connect_socket(host, port):
 
 # ---------- GPS Functions ----------
 def clearRxBuf():
-    while uart1.any():
-        print('buffer cleared of ',uart1.any(), 'bytes\n')
-        (uart1.read())
+    print('clearRxBuf')
+    nTry=0
+    global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
+    try:
+        #print('clearRxBuf:', uart1.any(),'bytes')
+        while uart1.any() and nTry < 4:
+            print('buffer cleared of ',uart1.any(), 'bytes\n')
+            (uart1.read())
+            nTry += 1
+        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
+        towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+    except Exception as e:
+        print("clearRxBuffer error:",e)
+        print(uart1.any())
+        uart1.read(1)
+        uart1.read()
+        #error_msg = (100, mac_id, 1, 0, 0, 0, 0, 0, 0)
+        #packet = data_packing(send_packet_format, error_msg)
+        #s.send(packet)
+        pass
 
+def maxRxBuf(n):
+    print("maxRxBuf")
+    global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
+    nTry = 0
+    #print('maxRxBuf')
+    try:
+        while (uart1.any() > (n )) and nTry < 4:
+            nskim = uart1.any()-n + 1000
+            print('buffer cleared of ',nskim, 'bytes\n')
+            (uart1.read(nskim))
+            nTry += 1
+        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
+        towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+    except Exception as e:
+        print('maxRxbuf exception',e)
+        error_msg = (100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, error_msg)
+        s.send(packet)
+
+hdr = bytearray(1)
 def findUBX_HDR():
-    while  (uart1.read(1) != b'\xb5'):
-        pass
-    while  (uart1.read(1) != b'\x62'):
-        pass
-    #        C   ID  RF Cal  ch wno  Ms Sub cnt
-    #request=(0,  0,  0,  0,  0,  0,  0,  0,  0)
+  try:
+    state = 0  # 0 = looking for 0xB5, 1 = looking for 0x62
+    
+    while True:
+        if uart1.any() == 0:
+            time.sleep_ms(1)
+            continue
 
-def readData(det):
-#det: 0 == BH and 1 == AS
-#     towMsR=0
-#     while towMsR < Request:
-        
-        #print('readData')
-        findUBX_HDR()    
-        #print('\tFound UBX header: ', bytehdr)
-        #bytehdr = UBX_HDR
-        while uart1.any() < 4:
-            pass
-        data0 = uart1.read(4)
-        #print('Header: ',data0)
-        bytehdr2 = data0[0:2]
-        lenb = data0[2:4]
-        if bytehdr2 == RXM_TM:
-            hdr2='RXM_TM'
-            ##print('\tFound Raw time stamp header: ', bytehdr2)
-        elif bytehdr2 == TIM_TM2:
-            hdr2='TIM_TM2'
-            ##print('\tFound Calibrated time stamp header: ', bytehdr2)
-
-        leni = int.from_bytes(lenb, "little")
-        ##print('\tdata length: ',leni)
-        ##print ('buffer ', uart1.any())
-        while uart1.any() < (leni+2):
-            pass
-
-        if (bytehdr2 == RXM_TM):
-                plb = uart1.read(leni)
-                #print(plb)
-                cksum = uart1.read(2)
-                #print('checksum:',cksum)
-                version=plb[0]
-
-                end="   "
-                ##print('\nraw data:\n', bytehdr+bytehdr2+plb+cksum, '\n')
-
-                ##print ('parsed data:')
-                ##print(hdr+'|'+hdr2)
-                #print('ver',version, end=end)
-                numMeas=plb[1]
-                #print('numMeas',numMeas, end ="\t")
-                for ii in range(0, numMeas*24, 24):
-                    #print('ii',ii,end=end)
-                    edgeInfob=plb[8+ii:12+ii]
-                    #print('edgeInfob',edgeInfob)
-                    edgeInfo=int.from_bytes(edgeInfob, "little")
-                    #print('edgeInfo',edgeInfo, end =end)
-                    RF= (edgeInfo >> 4) & 1
-                    #if RF ==1:
-                        #print('EdgeF', end =end)
-                    #else:
-                        #print('EdgeR', end =end)
-                    ch = edgeInfo & 1
-                    ##print('channel ', ch, end =end)
-                    countb = plb[12+ii:14+ii]
-                    count=int.from_bytes(countb, "little")
-                    ##print('count ', count, end =end)
-                    wnob=plb[14+ii:16+ii]
-                    wno=int.from_bytes(wnob,"little")
-                    ##print('wno ', wno, end =end)
-                    towMsb=plb[16+ii:20+ii]
-                    towMs=int.from_bytes(towMsb,"little")
-                    ##print('towMs ', towMs, end =end)
-                    towSubMsb=plb[20+ii:24+ii]
-                    towSubMs=int.from_bytes(towSubMsb,"little")
-                    ##print('towSubMs ', towSubMs)
-                ##print('\n')
-#                     RFRaw.append(RF)
-#                     chRaw.append(ch)
-#                     countRaw.append(count)
-#                     towMsRaw.append(towMs)
-#                     towSubMsRaw.append(towSubMs)
-        elif (bytehdr2 == TIM_TM2):
-                plb = uart1.read(leni)
-                #print(plb)
-                cksum = uart1.read(2)
-                #print('checksum:',cksum)
-
-                end="   "
-                ##print('\nraw data:\n', bytehdr+bytehdr2+plb+cksum, '\n')
-
-                ##print ('parsed data:')
-                ##print(hdr+'|'+hdr2)
-                #print('ver',version, end=end)
-                ch=plb[0]
-                ##print('channel ',channel, end=end)
-                edgeInfo=plb[1]
-                #print('edgeInfo',edgeInfo, end = end)
-                #edgeInfo=int.from_bytes(edgeInfob, "little")
-                edgeF = (edgeInfo >> 2) & 1
-                edgeR = (edgeInfo >> 7) & 1
-                timeValid = (edgeInfo >> 6) & 1
-                #timeValid = int.from_bytes(timeValidb, "little")
-                #print('timeValid', timeValid, end=end)
-                countb = plb[2:4]
-                count=int.from_bytes(countb, "little")
-                ##print('count ', count, end =end)
-                wnoRb = plb[4:6]
-                wnoR=int.from_bytes(wnoRb, "little")
-                ##print('wnoR ', wnoR, end =end)
-                wnoFb = plb[6:8]
-                wnoF=int.from_bytes(wnoFb, "little")
-                ##print('wnoF ', wnoF, end =end)
-                towMsRb=plb[8:12]
-                towMsR=int.from_bytes(towMsRb,"little")
-                ##print('towMsR ', towMsR, end=end)
-                towSubMsRb=plb[12:16]
-                towSubMsR=int.from_bytes(towSubMsRb,"little")
-                ##print('towSubMsR ', towSubMsR, end=end)
-                towMsFb=plb[16:20]
-                towMsF=int.from_bytes(towMsFb,"little")
-                ##print('towMsF ', towMsF, end=end)
-                towSubMsFb=plb[20:24]
-                towSubMsF=int.from_bytes(towSubMsFb,"little")
-                ##print('towSubMsF ', towSubMsF, end=end)
-                accEstb=plb[24:28]
-                accEst=int.from_bytes(accEstb,"little")
-                ##print('accEst ', accEst, end=end)
-                
-                ##print('\n')
-                
-                #cksum = uart1.read(2)
-                #print('checksum',cksum,'\n')
-                if det == 1:
-                    #RFRaw.append(0)
-                    #chRaw.append(ch)
-                    countCal.append(count)
-                    towMsCal.append(towMsR)
-                    towSubMsCal.append(towSubMsR)
-
+        uart1.readinto(hdr)  # integer, no bytes object
+        b = hdr[0]
+        if state == 0:
+            if b == 0xB5:
+                state = 1
         else:
-                ##print('It is junk')
-                
-                while uart1.any():
-                    print('buffer cleared of ',uart1.any(), 'bytes\n')
-                    (uart1.read())
-        
-        if (bytehdr2 == TIM_TM2) & (det == 1):
-            return((wnoR,towMsR,towSubMsR)) #calibrated data
-        elif (bytehdr2 == TIM_TM2) & (det == 0):
-            #print(ch, wnoR, wnoF, towMsR, towMsF, towSubMsR, towSubMsF)
+            if b == 0x62:
+                return  # header found
+            else:
+                state = 0            
 
-            return [
-                (0, timeValid, ch, wnoR, towMsR, towSubMsR, count),
-                (1, timeValid, ch, wnoF, towMsF, towSubMsF, count)
-            ]
-        else:
-            return((0,0,0))
+  except Exception as e:
+    print("findUBX_HDR error:",e)
+    error_msg = (100, mac_id, 3, 0, 0, 0, 0, 0, 0)
+    packet = data_packing(send_packet_format, error_msg)
+    s.send(packet)
+
+hdr2 = bytearray(4)
+def findHDR2():
+    while uart1.any() < 4:
+        time.sleep_ms(1)
+    uart1.readinto(hdr2)
+    cls  = hdr2[0]
+    msg  = hdr2[1]
+    leni = hdr2[2] | (hdr2[3] << 8)
+#    print('HDR2', cls,msg,leni)
+    return cls, msg, leni
+
+plb = bytearray(2048)
+ck  = bytearray(2)
+
+def readData():
+    #print('readData')
+    global slope
+    global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
+
+
+    try:
+        # Find UBX sync
+        findUBX_HDR()
+
+        cls, msg, leni = findHDR2()
+        if leni > 2048:
+            #print("leni > 2048" )
+            return (0, 0, 0, 0, 0)
+
+        # Wait cooperatively for payload + checksum
+        needed = leni + 2
+        while uart1.any() < needed:
+            time.sleep_ms(1)
+
+        # Read payload + checksum without allocating
+        uart1.readinto(plb, leni)
+        uart1.readinto(ck, 2)
+
+        # ---------- RXM-TM ----------
+        if (cls, msg) == RXM_TM:
+            #print('RXM_TM')
+            version = plb[0]
+            numMeas = plb[1]
+
+            base = 8
+            for _ in range(numMeas):
+                edgeInfo = (
+                    plb[base+0] |
+                    (plb[base+1] << 8) |
+                    (plb[base+2] << 16) |
+                    (plb[base+3] << 24)
+                )
+
+                RF = (edgeInfo >> 4) & 1
+                ch = edgeInfo & 1
+
+                count = plb[base+4] | (plb[base+5] << 8)
+                wno   = plb[base+6] | (plb[base+7] << 8)
+
+                towMs = (
+                    plb[base+8] |
+                    (plb[base+9] << 8) |
+                    (plb[base+10] << 16) |
+                    (plb[base+11] << 24)
+                )
+
+                towSubMs = (
+                    plb[base+12] |
+                    (plb[base+13] << 8) |
+                    (plb[base+14] << 16) |
+                    (plb[base+15] << 24)
+                )
+
+                RFRaw.append(RF)
+                #print('RF',RFRaw,RF)
+                chRaw.append(ch)
+                #print('ch',chRaw,ch)
+                countRaw.append(count)
+                #print('count',countRaw,count)
+                towMsRaw.append(towMs)
+                towSubMsRaw.append(towSubMs)
+
+                base += 24
+
+        # ---------- TIM-TM2 ----------
+        elif (cls, msg) == TIM_TM2:
+            #print('TIM_TM2')
+            ch = plb[0]
+            edgeInfo = plb[1]
+
+            edgeF     = (edgeInfo >> 2) & 1
+            edgeR     = (edgeInfo >> 7) & 1
+            timeValid = (edgeInfo >> 6) & 1
+
+            count = plb[2] | (plb[3] << 8)
+            wnoR  = plb[4] | (plb[5] << 8)
+            wnoF  = plb[6] | (plb[7] << 8)
+
+            towMsR = (
+                plb[8] |
+                (plb[9] << 8) |
+                (plb[10] << 16) |
+                (plb[11] << 24)
+            )
+
+            towSubMsR = (
+                plb[12] |
+                (plb[13] << 8) |
+                (plb[14] << 16) |
+                (plb[15] << 24)
+            )
+
+            towMsF = (
+                plb[16] |
+                (plb[17] << 8) |
+                (plb[18] << 16) |
+                (plb[19] << 24)
+            )
+
+            towSubMsF = (
+                plb[20] |
+                (plb[21] << 8) |
+                (plb[22] << 16) |
+                (plb[23] << 24)
+            )
+
+            accEst = (
+                plb[24] |
+                (plb[25] << 8) |
+                (plb[26] << 16) |
+                (plb[27] << 24)
+            )
+
+            #if det == 1:
+            countCal.append(count)
+            towMsCal.append(towMsR)
+            towSubMsCal.append(towSubMsR)
+            return (wnoR, towMsR, towSubMsR, timeValid, ch)
+
+#             return [
+#                 (0, 1, ch, wnoR, towMsR, towSubMsR),
+#                 (1, 1, ch, wnoF, towMsF, towSubMsF)
+#             ]
+
+        # ---------- NAV-CLOCK ----------
+        elif (cls, msg) == NAV_CLOCK:
+            #print('NAV_CLOCK')
+            iTOW = (
+                plb[0] |
+                (plb[1] << 8) |
+                (plb[2] << 16) |
+                (plb[3] << 24)
+            )
+
+            iclkBias  = ustruct.unpack_from('<i', plb, 4)[0]
+            iclkDrift = ustruct.unpack_from('<i', plb, 8)[0]
+
+            tAcc = (
+                plb[12] |
+                (plb[13] << 8) |
+                (plb[14] << 16) |
+                (plb[15] << 24)
+            )
+
+            fAcc = (
+                plb[16] |
+                (plb[17] << 8) |
+                (plb[18] << 16) |
+                (plb[19] << 24)
+            )
+
+            slope = iclkDrift
+            #print('** slope =', slope)
+
+        # Yield once after heavy UART work
+        time.sleep_ms(0)
+        return (0, 0, 0, 0, 0)
+
+    except Exception as e:
+        print("Error in readData:", e)
+        return (0, 0, 0, 0, 0)
 
 
 # ---------- Wi-Fi Setup ---------
-ssid = 'ONet'
-password = ''
+ssid = 'AirShower2.4G'
+password = 'Air$shower24'
 
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
@@ -260,22 +350,23 @@ print("ESP IP:", ip_last_byte)
 # ---------- Connecting to Server ----------
 #HOST = '192.168.0.93' #Home
 #HOST = '134.69.200.155'
-HOST = '134.69.218.243' #Karbon Computer
+HOST = '134.69.77.61' #Karbon Computer
 PORT = 12345
 
 s = connect_socket(HOST,PORT)
-s.settimeout(.1)
+#s.settimeout(.1)
+s.setblocking(False)
 
 # ---------- Send and Recieve Functions ----------
 def send_data(d):
     global s
     
     try:
-        data = s.send(d)
-        return data 
+        return s.send(d)
+        
 
     except OSError as e:
-        if e.args[0] in [11, 110, 104]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
             # No data or connection lost
             print("No data")
             
@@ -297,7 +388,7 @@ def recieve(num_bytes):
             print("Wifi RX buffer cleared of:", len(data), "bytes")
 
     except OSError as e:
-        if e.args[0] in [11, 110, 104]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
             # No data or connection lost
             print("No data to clear")
             
@@ -321,11 +412,48 @@ packet = data_packing(send_packet_format, info_msg)
 send_data(packet)
 
 # ---------- Main Loop ----------
+
+slope=0
+tRaw1=None
+Valid = 0
+RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
+towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+
+while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
+    print('\ninit while loop', slope, tRaw1, Valid)
+    uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
+    for i in range(4):
+        res=readData()
+        if (res[1] > 0):
+            if (res[3] > 0):
+                Valid = 1
+            else:
+                Valid = 0
+                print("GPS not locked")
+                time.sleep(1)# wait 1 second before trying again
+                break
+        lastC=len(countCal)-1
+        lastR=len(countRaw)-1
+        #print('countCal',countCal,'countRaw',countRaw)
+    for i in range(lastR,-1,-1):
+        #print('line 569')
+        if countRaw[i]==countCal[lastC]:
+            #print("i:", i)
+            #print("countRaw[i]:", countRaw[i])
+            #print("countCal[lastC]:", countCal[lastC])
+            
+            tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
+            tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
+            break
+
 clearRxBuf()
 
+T0=time.ticks_us()
 event_num = 0 #Keeps track of borehole events (could be moved to server)
 
 wdt = WDT(timeout=20000)  # 5 seconds
+
+send_buffer = bytearray()
 
 while True:
     try:
@@ -333,43 +461,92 @@ while True:
         if not wlan.isconnected():
             con_to_wifi(ssid, password)
         
+        maxRxBuf(15000) #Make sure buffer isnt full before recieving      
         res = (0,0,0)
-        while res[0] == 0:
-            res = readData(0)
-            #wdt.feed()
-            print(res)
-        #print('res:', res)
-        timesOfInterest = res
+        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[]; towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+        toi = []
+        T1=time.ticks_us()
+        diff = time.ticks_diff(T1, T0)
+        #Every 5 seconds poll Nav Clock
+        if diff > 5_000_000:
+            #print('NEvents')
+            uart1.write(POLL_NAV_CLOCK)
+            T0=T1
+
+        while (res[0] == 0) or (res[4] == 1):
+            res = readData()
+            #print('res:', res)
+        timeValid = res[3]
+        wnoToi=res[0]
+        lastC=len(countCal)-1
+        lastR=len(countRaw)-1
+
+        for i in range(lastR,-1,-1):
+            if countRaw[i]==countCal[lastC]:
+                tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
+                tRaw1=towMsRaw[i]*1000000+ towSubMsRaw[i]//1000
+                break
+
+        lenRaw=len(towMsRaw)
+        for i in range(lenRaw):   #
+            if chRaw[i] == 0:
+                tRaw=towMsRaw[i]*1000000+ towSubMsRaw[i]//1000           
+                res=(tRaw-tRaw1)-((tRaw-tRaw1)*slope//1000000000)+tCal1
+                Ms=res//1000000
+                SubMs = res - Ms * 1000000
+                toi.append((RFRaw[i],timeValid,chRaw[i],wnoToi,Ms,SubMs, countRaw[i], i)) 
+        for i in range(len(toi)): #Select among the channel 0
+            #print("i",i,end=" ")
+            if toi[i][0] == 0:  #if it is a rise
+                #print("R",end=" ")
+                iRaw=toi[i][7]# pointing to raw data with ch0, rise
+                tRaw= towMsRaw[iRaw]*1_000_000 + towSubMsRaw[iRaw]//1000  # raw time for ch0, rise
+                for j in range(lenRaw):
+                    #print("j",j,end=" ")
+                    if chRaw[j] == 1:  #select encoding
+                        #print("C1",end=" ")
+                        tRaw2 = towMsRaw[j]*1_000_000 + towSubMsRaw[j]//1000  # raw time for ch1, rise or fall
+                        diff = tRaw2-tRaw #tEncoding - tSignal
+                        #print("D",diff,end=" ")
+                        if (diff < 750)  and (diff >= 0):  #encoding of interest within 500 ns of rise of ch0
+                            #print("Y",end=" ")
+                            res=(tRaw2-tRaw1)-((tRaw2-tRaw1)*slope//1000000000)+tCal1  #Cal encoding time
+                            Ms=res//1000000
+                            SubMs = res - Ms * 1000000
+                            #append encoding of interest, use same count as ch0
+                            toi.append((RFRaw[j],timeValid,1,wnoToi,Ms,SubMs,countRaw[iRaw], j))        
+        
         ID=mac_id
         
-        for i in range(len(timesOfInterest)):
+        for i in range(len(toi)):
             inst = 99           
             ID = mac_id
-            RF = timesOfInterest[i][0]              
-            cal = timesOfInterest[i][1]               
-            ch = timesOfInterest[i][2]           
-            w_num = timesOfInterest[i][3]   
-            ms = timesOfInterest[i][4]      
-            sub_ms = timesOfInterest[i][5]
+            RF = toi[i][0]              
+            cal = toi[i][1]               
+            ch = toi[i][2]           
+            w_num = toi[i][3]   
+            ms = toi[i][4]      
+            sub_ms = toi[i][5]
             event_num = event_num 
-            count = timesOfInterest[i][6] 
+            count = toi[i][6] 
 
             msg = (inst, ID, RF, cal, ch, w_num, ms, sub_ms, event_num, count)
             
             packet = data_packing(send_packet_format, msg)
 
-            try:
-                data = send_data(packet)
-                recieve(1024) #Keeps socket empty
-                wdt.feed()
-                event_num +=1 
+            send_buffer+=packet
 
-                #gc.collect()
-                print(f'Bytes sent: {data}') #Prints byte size
-            
-            except Exception as e:
-                print("Send error:", e)
-                continue
+        try:
+            data = send_data(send_buffer)
+            if data: 
+                print("!!!!!!!!!!!!!!!!!!!!!data sent", len(send_buffer) )
+            send_buffer = bytearray()
+            recieve(1024) #Keeps socket empty
+            wdt.feed()
+            event_num +=1 
+        except Exception as e:
+            print("Send error:", e)
+            continue
 
     except Exception as e:
         print("Error in main loop", e)
@@ -382,4 +559,5 @@ while True:
     
 
     
+
 
