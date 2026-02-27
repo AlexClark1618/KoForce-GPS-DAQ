@@ -1,13 +1,9 @@
 #Airshower Main
-#Updated- 1/28/26 
+#Updated- 2/26/26 
 
 #Changelog
-    #Changed logic with send and receive functions
-    #New Calibration and rate calculator
-    #Cleanup
-    #Added null counter
-    #Shrunk timewindow to 100us
-
+    #Local rx buffer
+    #More stats
 
 import socket
 import ustruct
@@ -20,8 +16,16 @@ import ota_update
 import _thread
 import sys
 import select
+from machine import freq
 
-#---------OTA Function------------
+from PPS import init_time, pps_irq, ubx_checksum, ubx_send, ubx_recv, poll_gps_time, discipline_rtc,rtc_to_gps_wno_ms_subms
+
+
+freq(240000000)
+
+#=====================================================================================
+#                                   OTA FUNCTION
+#=====================================================================================
 try:
     with open('config.txt') as f:
         detector_num = f.read().strip()
@@ -30,13 +34,13 @@ except OSError:
     detector_num = "0"  # default if not yet set
     print("No config.txt found, using default detector number:", detector_num)
 
-version_num = "0.09"
+version_num = "0.19"
 # wdt = None
 t = None
 ota_in_progress = False
 
 def start_listener():
-    global wdt, t, ota_in_progress, version_num, detector_num
+    global wdt, s, ota_in_progress, version_num, detector_num
     addr = socket.getaddrinfo('0.0.0.0', 8080)[0][-1]
     t = socket.socket()
     t.bind(addr)
@@ -46,32 +50,75 @@ def start_listener():
     while True:
         cl, addr = t.accept()
         print('Client connected from', addr)
-        request = cl.recv(1024)
-        if not request:
+        raw_request = cl.recv(1024)
+        if not raw_request:
             cl.close()
             continue
 
-        #request = str(request)
-        request = request.decode()
+        request = raw_request.decode()
 
         if "/ota" in request:
-            print("OTA trigger received")
+            print("[LISTENER] === SEGMENT 1: OTA REQUEST RECEIVED ===")
+            print("[LISTENER] Raw request size:", len(raw_request), "bytes")
+
+            # Parse Content-Length from POST headers
+            print("[LISTENER] === SEGMENT 2: PARSING HEADERS ===")
+            content_length = 0
+            for line in request.split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    content_length = int(line.split(":")[1].strip())
+                    break
+            print("[LISTENER] Content-Length:", content_length)
+
+            if content_length == 0:
+                print("[LISTENER] ERROR: No Content-Length header found. Is curl sending --data-binary?")
+                cl.send(b"HTTP/1.1 400 Bad Request\r\n\r\nNo file data received\n")
+                cl.close()
+                continue
+
+            # Split headers from body (body starts after \r\n\r\n)
+            print("[LISTENER] === SEGMENT 3: SPLITTING HEADERS FROM BODY ===")
+            initial_data = b""
+            if b"\r\n\r\n" in raw_request:
+                header_end = raw_request.index(b"\r\n\r\n") + 4
+                initial_data = raw_request[header_end:]
+                print("[LISTENER] Header size:", header_end, "bytes")
+                print("[LISTENER] Initial body data:", len(initial_data), "bytes")
+            else:
+                print("[LISTENER] WARNING: No header/body separator found in request")
+
+            print("[LISTENER] === SEGMENT 4: DISABLING WDT ===")
             try:
-                #wdt = WDT(1000000)  # effectively disables watchdog during OTA
-                print("Watchdog disabled for OTA.")
+                wdt = WDT(1000000)
+                print("[LISTENER] Watchdog disabled for OTA.")
             except Exception as e:
-                print("Error disabling WDT:", e)
-            
+                print("[LISTENER] WDT disable error (non-fatal):", e)
+
+            print("[LISTENER] === SEGMENT 5: SETTING OTA FLAG ===")
             ota_in_progress = True
-            time.sleep(0.2) # check this time for timeout errors in other places
-            cl.send("HTTP/1.1 200 OK\r\n\r\nUpdating...\n")
-            ota_update.download_and_install(cl)
+            print("[LISTENER] ota_in_progress = True")
+
+            # Close DAQ socket immediately to stop main loop TCP activity.
+            # Concurrent sends on the DAQ socket kill the OTA connection.
+            print("[LISTENER] === SEGMENT 5.5: CLOSING DAQ SOCKET ===")
+            try:
+                s.close()
+                print("[LISTENER] DAQ socket closed")
+            except Exception as e:
+                print("[LISTENER] DAQ socket close error (non-fatal):", e)
+
+            # Response is sent AFTER body is fully read (inside receive_and_install)
+            # to keep curl in "sending" mode during the transfer
+            print("[LISTENER] === SEGMENT 6: HANDING OFF TO OTA_UPDATE ===")
+            ota_update.receive_and_install(cl, content_length, initial_data)
         elif "/version" in request:
             cl.send("HTTP/1.1 200 OK\r\n\r\nDetector "+ detector_num + " Firmware Version Number: " + version_num + "\n")
         else:
             cl.send(b"HTTP/1.1 200 OK\r\n\r\nHello from ESP32\n")
         cl.close()
 
+
+#=====================================================================================
 
 #---------GPS Variables-----------
 UBX_HDR = b'\xb5\x62' 
@@ -86,7 +133,7 @@ REQUESTED_TIME_WINDOW = 1000000  #returned times (ns) will be within +/- request
 POLL_NAV_CLOCK = b'\xb5\x62\x01\x22\x00\x00\x23\x6a'
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
-rxbuf = (8192 * 3 ) # 24kB seems to be the max allowed within the code.
+rxbuf = (8192 * 3) # 24kB seems to be the max allowed within the code.
 uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=rxbuf)
 
 time.sleep(0.1)
@@ -96,11 +143,16 @@ global tcoll0
 tcoll0=0
 
 # ---------- Wi-Fi Setup ----------
+#ssid = 'TP-Link_7A54'
+#password = '38694424'
 ssid = 'AirShower2.4G'
 password = 'Air$shower24'
-
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
+wlan.config(pm=network.WLAN.PM_NONE)
+
+wlan.config(pm = 0)
+
 
 def clear_wifi_rx_buffer():  
     global s        
@@ -125,7 +177,7 @@ def con_to_wifi(ssid, password):
             wlan.connect(ssid, password)
             time.sleep(0.1)
             while not wlan.isconnected():
-                time.sleep(0.1)
+                time.sleep(0.5)
             print("Wi-Fi connected.")
             return wlan.ifconfig()
         except Exception as e:
@@ -153,10 +205,12 @@ def connect_socket(host, port):
         try:
             s = socket.socket()
             s.connect((host, port))
+            time.sleep(1)
             print("Socket connected.")
             return s
         except Exception as e:
             print("Failed to connect socket:", e)
+            time.sleep(1)
             continue     
 
 """def reconnect_socket(sock):
@@ -287,37 +341,6 @@ def maxRxBuf(n):
         packet = data_packing(send_packet_format, error_msg)
         send_data(packet)
 
-'''
-def findUBX_HDR():
-    try:
-        #print('findUBX_HDR')
-        Byte2=0
-        while Byte2 != b'\x62':
-            while uart1.any() < 1:
-                time.sleep_ms(0)
-                pass
-            Byte1 = uart1.read(1)
-            while Byte1 != b'\xb5':
-                #print('.',end='')
-                while uart1.any() < 1:
-                    time.sleep_ms(0)
-                    pass
-                Byte1 = uart1.read(1)
-                time.sleep_ms(0)
-                pass
-            #print('')
-            while uart1.any() < 1:
-                time.sleep_ms(0)
-                pass
-            Byte2=uart1.read(1)
-            
-    except Exception:
-        print("findUBX_HDR error:",e)
-        error_msg = (100, mac_id, 14, 0, 0, 0, 0, 0, 0)
-        packet = data_packing(send_packet_format, error_msg)
-        send_data(packet)
-'''
-
 hdr = bytearray(1)
 def findUBX_HDR():
     try:
@@ -344,20 +367,6 @@ def findUBX_HDR():
         packet = data_packing(send_packet_format, error_msg)
         send_data(packet)
 
-
-'''
-def findHDR2():
-    while uart1.any() < 4:
-        time.sleep_ms(0)
-        pass
-    data0 = uart1.read(4)
-    #print('Header: ',data0)
-    bytehdr2 = data0[0:2]
-    lenb = data0[2:4]
-    leni = int.from_bytes(lenb, "little")
-    return(bytehdr2, leni)
-'''
-
 hdr2 = bytearray(4)
 def findHDR2():
     while uart1.any() < 4:
@@ -383,6 +392,8 @@ toi_SubMs   = [0] * MAX_TOI
 #toi_count   = [0] * MAX_TOI
 
 def request(wnoToi,MsToi,subMsToi):
+    T_r_s = time.ticks_us()
+
     global slope, tcoll0, toi_len, unreas_count
     global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
     try:
@@ -400,27 +411,10 @@ def request(wnoToi,MsToi,subMsToi):
           subMsToi = res[2]
           #print('end if')
         resToi=MsToi*1000000+subMsToi
-#         tcoll0=time.time_ns()
-#         gc.collect()
-#         tcoll1=time.time_ns()
-#         print('time to collect', tcoll1-tcoll0)
-#        freemem=gc.mem_free()
-#        print(tcoll0)
-#         if (time.time_ns()-tcoll0)/1000000 > 100:
-#             print('free memory:',freemem)
-#             if freemem < 50000:
-#                print('free memory < 50000') 
-#                tcoll0=time.time_ns()
-#                gc.collect()
-#                tcoll1=time.time_ns()
-#                print('time to collect', tcoll1-tcoll0)
-#                print('free memory:', gc.mem_free())
+
             
         res=(0,0,0,0)
-        #print("res[1]", res[1])
-#        print("MsToi:", MsToi)
-        #print('101')
-        #print("request started")
+
         diff=0
 #        print('free mem before readData',gc.mem_free())
         res=readData(1)        
@@ -431,32 +425,30 @@ def request(wnoToi,MsToi,subMsToi):
             #continue
          
         diff=(res[1]-MsToi)*1000000+(res[2]-subMsToi)
+
         #print("diff", diff)
-        if ((diff > REQUESTED_TIME_WINDOW) or (diff < -1000000000))  or ((res[0] != wnoToi) and (wnoToi != -1)):
-            print('##################################Unreasonable request', diff//1000000,'ms', res[1], MsToi)
+        # request is later than now or if request is sooner than start of additional buffer the U.Req.
+        #print(rtc_to_gps_wno_ms_subms())
+        #print(res)
+        wno, Ms, subMs = rtc_to_gps_wno_ms_subms()
+        if ((MsToi > Ms) or (MsToi < towMsCal[0])) or ((res[0] != wnoToi) and (wnoToi != -1)):
+        #if ((diff > REQUESTED_TIME_WINDOW) or (diff < -1000000000))  or ((res[0] != wnoToi) and (wnoToi != -1)):
+            print('##################################Unreasonable request', "Cal:", towMsCal[0], "PPS:", Ms, "Toi:", MsToi)
+        #if ((diff > REQUESTED_TIME_WINDOW) or (diff < -1000000000))  or ((res[0] != wnoToi) and (wnoToi != -1)):
+            #print('##################################Unreasonable request', diff//1000000,'ms', res[1], MsToi)
             unreas_count += 1
+            #ur_msg = (96, mac_id, 0, 0, 0, 0, 0, 0, event_num, buf_size) ###
+            #send_packet = data_packing(send_packet_format, ur_msg) ###
+            #send_buffer += send_packet
+
+            #send_data(send_packet) 
             #print(unreas_count)
             #toi_len == None
             #return toi_len
          
         while (diff < REQUESTED_TIME_WINDOW):  # | (bytehdr2 == RXM_TM): #Exceed the time of interest by at least 1 ms and capture an extra RXM data packet    
             res=readData(1)
-            #diff=(res[1]-MsToi)*1000000+(res[2]-subMsToi)
-            #print(diff)
-            #print("res in while", res)
-            
-            #print(res)
-            #print('free mem after readData',gc.mem_free(),res[0])
 
-#             RFRaw=RFRaw[-95:]
-#             chRaw=chRaw[-95:]
-#             countRaw=countRaw[-95:]
-#             countCal=countCal[-2:]
-#             towMsRaw=towMsRaw[-95:]
-#             towMsCal=towMsCal[-2:]
-#             towSubMsRaw=towSubMsRaw[-95:]
-#             towSubMsCal=towSubMsCal[-2:]
-            
             if res[1] > 0:
                 diff=(res[1]-MsToi)*1000000+(res[2]-subMsToi)
             
@@ -467,60 +459,21 @@ def request(wnoToi,MsToi,subMsToi):
                     unreas_count += 1
                     print(unreas_count)
             '''
-                    #
-                    
-                    #toi_len == None
-                    #error_msg = (100, mac_id, 16, diff//1000000, 0, 0, 0, 0, 0, 0)
-                    #packet = data_packing(send_packet_format, error_msg)
-                    #s.send(packet)
-                    #return None
-#         print('102')                        
-#         readData(1) #???
-#         print('readData2',time.time_ns())
-#         readData(1) #???
-#         print('readData3',time.time_ns())
-#         readData(1) #???
-#         print('readData4',time.time_ns())
+
         timeValid = res[3]
         lastC=len(countCal)-1
         lastR=len(countRaw)-1
-        #Find upper index in raw data
-        #print("countRaw:", countRaw)
-        #print("countCal:", countCal)
-#        print("lastR:",lastR)
-#        print("lastC:",lastC)
-        #print("towMsRaw:",towMsRaw)
-        #print("towMsCal:", towMsCal)
-#        print('buffer size ',uart1.any(), 'bytes\n')
-#        print('103')
 
-#         if (lastC < 0) or (lastR < 0): #Bandaid for when there is only one calibrated data for some reason
-#             print('Missing elements')
-#             error_msg = (100, mac_id, 18, 0, 0, 0, 0, 0, 0, 0)
-#             packet = data_packing(send_packet_format, error_msg)
-#             s.send(packet)
-#             return None
-#        print('free mem before calib',gc.mem_free())
+
         for i in range(lastR,-1,-1):
             if countRaw[i]==countCal[lastC]:
-                #print("i:", i)
-                #print("countRaw[i]:", countRaw[i])
-                #print("countCal[lastC]:", countCal[lastC])
-                #print("towMsCal[lastC]:", towMsCal[lastC])
-                #print("towMsRaw[i]:", towMsRaw[i])
-                #print("towSubMsRaw[i]:", towSubMsRaw[i])
-                #print(lastC)
-                #print(towSubMsCal)
-                #print("towSubMsCal[lastC]:", towSubMsCal[lastC])
+
                 
                 
                 tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
                 tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
                 break
-#        print('104')
-        #print('free mem after calib',gc.mem_free())
-        
-        #timesOfInterest=[]
+
         rfoi=[]; tvoi=[]; choi=[]; wnoi=[]; msoi=[]; submsoi=[]; countoi=[]
         toi_len=0
 
@@ -541,19 +494,7 @@ def request(wnoToi,MsToi,subMsToi):
                 #print(f"i:{i},resToi:{resToi},tCal1:{tCal1}, res:{res}, Ms:{Ms}, SubMs:{SubMs}")
                 if (SubMs > 999999):
                     print('*************SubMs > 999999*********')
-#         rfoi.append(RFRaw[i])
-#         tvoi.append(timeValid)
-#         choi.append(chRaw[i])
-#         wnoi.append(wnoToi)
-#         msoi.append(Ms)
-#         submsoi.append(SubMs)
-#         countoi.append(countRaw[i])
-#         toi_RF      = [0] * MAX_TOI
-#         toi_valid   = [0] * MAX_TOI
-#         toi_ch      = [0] * MAX_TOI
-#         toi_wno     = [0] * MAX_TOI
-#         toi_Ms      = [0] * MAX_TOI
-#         toi_SubMs   = [0] * MAX_TOI
+
                 toi_RF[toi_len]=RFRaw[i]
                 toi_valid[toi_len]=timeValid
                 toi_ch[toi_len]=chRaw[i]
@@ -561,13 +502,13 @@ def request(wnoToi,MsToi,subMsToi):
                 toi_Ms[toi_len]=Ms
                 toi_SubMs[toi_len]=SubMs
                 toi_len +=1
-        #timesOfInterest.append((RFRaw[i],timeValid,chRaw[i],wnoToi,Ms,SubMs, countRaw[i])) 
-#        print('105')
-        #print('free mem end  req',gc.mem_free())
-
+        T_r_e = time.ticks_us()
+        #print("Req Time:", time.ticks_diff(T_r_e, T_r_s))
         return(toi_RF,toi_valid,toi_ch,toi_wno,toi_Ms,toi_SubMs)
     
     except Exception as e:
+        sys.print_exception(e)
+
         print("Request error:", e)
         error_msg = (100, mac_id, 6, 0, 0, 0, 0, 0, 0, 0)
         packet = data_packing(send_packet_format, error_msg)
@@ -576,8 +517,19 @@ def request(wnoToi,MsToi,subMsToi):
 
 plb = bytearray(2048)
 ck  = bytearray(2)
+NEvents0 = 0
+NEvents1 = 0
+#deltaT0 = 0
+#deltaT1 = 0
+deltaT = 0
+
 def readData(det):
-    global slope
+    T_rd_s = time.ticks_us()
+    
+    global slope, deltaT, NEvents0, NEvents1
+    global RFRaw, chRaw, countRaw
+    global countCal, towMsRaw, towMsCal
+    global towSubMsRaw, towSubMsCal
     #print('0 readData free mem:',gc.mem_free())
 
     try:
@@ -606,6 +558,8 @@ def readData(det):
             #print('RXM_TM')
             version = plb[0]
             numMeas = plb[1]
+            
+            deltaT += 50            
 
             base = 8
             for _ in range(numMeas):
@@ -646,10 +600,15 @@ def readData(det):
                 towMsRaw.append(towMs)
                 towSubMsRaw.append(towSubMs)
                 #print('4 readData free mem:',gc.mem_free())
-
+                if RF==0:
+                    if ch==0:
+                        NEvents0 +=1
+                    elif ch==1:
+                        NEvents1 +=1
 
                 base += 24
-
+            T_rd_e = time.ticks_us()
+            #print("RD Time:", time.ticks_diff(T_rd_e, T_rd_s))
         # ---------- TIM-TM2 ----------
         elif (cls, msg) == TIM_TM2:
             #print('5 readData free mem:',gc.mem_free())
@@ -710,7 +669,8 @@ def readData(det):
                 #print('6 readData free mem:',gc.mem_free())
 
                 return (wnoR, towMsR, towSubMsR, timeValid)
-
+            T_rd_e = time.ticks_us()
+            print("RD Time:", time.ticks_diff(T_rd_e, T_rd_s))
             return [
                 (0, 1, ch, wnoR, towMsR, towSubMsR),
                 (1, 1, ch, wnoF, towMsF, towSubMsF)
@@ -756,6 +716,14 @@ def readData(det):
 
     except Exception as e:
         sys.print_exception(e)
+        RFRaw=[]
+        chRaw=[]
+        countRaw=[]
+        countCal=[]
+        towMsRaw=[]
+        towMsCal=[]
+        towSubMsRaw=[]
+        towSubMsCal=[]
         print("Error in readData:",e)
         error_msg = (100, mac_id, 7, 0, 0, 0, 0, 0, 0, 0)
         packet = data_packing(send_packet_format, error_msg)
@@ -768,11 +736,15 @@ send_data(packet)
 
 time.sleep(0.1)
 
-info_msg = (1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
+info_msg = (1, mac_id, ip_last_byte, int(detector_num), 0, 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
 packet = data_packing(send_packet_format, info_msg)
 send_data(packet)
 
 # ---------- Main Loop ----------
+
+global RFRaw, chRaw, countRaw
+global countCal, towMsRaw, towMsCal
+global towSubMsRaw, towSubMsCal
 RFRaw=[]
 chRaw=[]
 countRaw=[]
@@ -818,12 +790,9 @@ while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
             break
 
 null_count = 0
-NEvents0 = 0
-NEvents1 = 0
-deltaT0 = 0
-deltaT1 = 0
 NEventsSent0=0
 NEventsSent1=0
+NEventsSentBoth = 0
 T0=time.ticks_us()
 
 array_count = 0
@@ -833,16 +802,35 @@ R0index=[]
 R1index=[]
 global toi_len
 
-#gc.collect()
-clearRxBuf()
-clear_wifi_rx_buffer()
+
+for i in range(5):
+    clearRxBuf()
+    clear_wifi_rx_buffer()
+    time.sleep(0.1)
 
 send_buffer = bytearray()
+receive_buffer = bytearray()
+rate_send_buffer = bytearray()
+
+
+
 buf_size = 0
 unreas_count = 0
+ch0_null_count= 0
+ch1_null_count= 0
+
+init_time(uart1)
+
+request_bunching = []
+transit_time_list= []
+loop_time = []
+proc_time = []
+rx_count = 0
+
 while True:
     #gc.collect()
-    
+    receive_buffer = bytearray()
+    T_loop_s = time.ticks_us()
     if ota_in_progress:
         print("OTA in progress: closing gps data socket")
         try:
@@ -854,7 +842,7 @@ while True:
             print("Socket close error:", e)
         time.sleep(1_000_000)  # effectively idle until reset
 
-    print("1")
+    #print("1")
 
     try:
         # Ensure Wi-Fi stays connected
@@ -862,17 +850,54 @@ while True:
             print("Wi-Fi disconnected. Reconnecting...")
             con_to_wifi(ssid, password)
         buf_size = uart1.any()
+        if uart1.any()>24000:
+            print("Buffer Overload")
+            error_msg = (100, mac_id, 16, 0, 0, 0, 0, 0, 0, 0)
+            packet = data_packing(send_packet_format, error_msg)
+            send_data(packet)
+            
         maxRxBuf(20000)
-        print('buffer size ',uart1.any(), 'bytes\n')
-        req = receive(20, 10)
+        #print('buffer size ',uart1.any(), 'bytes\n')
+        req = receive(1024, 10)
+        #try:
+        #    data, addr = udp_sock.recvfrom(1024)
+        #except Exception:
+    # No data received in 10 ms
+        #    continue
         time.sleep_ms(0)
-        print("2")
-
+        #print("2")
+       
         if req:
+            wdt.feed()
+            receive_buffer += req
+            print('len of rx buf', len(receive_buffer))
+            req_bunch = len(receive_buffer)//20
+            request_bunching.append(req_bunch)
+            
+        while len(receive_buffer)>0:
+            rx_count +=1
+
+            req = receive_buffer[:20]
+            receive_buffer = receive_buffer[20:]
+            
+            #print("Rx:", len(req))
+            ch0_flag = 0
+            ch1_flag = 0
+            ch0_data_flag = 0
+            ch1_data_flag = 0
+            
+            timeStamp=rtc_to_gps_wno_ms_subms()
+            print(timeStamp)
             try:
                 inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, req) #There might be an error here. What if multiple messages came in at the same time and I read them all at the same time? Will they be lost as ustruct may only evaluate the first little bit?
+                #print(event_num)
+                trans_time = timeStamp[1] - ms
+                print("Trans time:", trans_time)
+                transit_time_list.append(trans_time)
+               
                 print("3")
             except Exception as e:
+                sys.print_exception(e)
                 print("Error unpacking request:", e)
                 error_msg = (100, mac_id, 8, 0, 0, 0, 0, 0, 0, 0)
                 packet = data_packing(send_packet_format, error_msg)
@@ -880,31 +905,46 @@ while True:
                 continue
 
             if inst == 99:
-                RFRaw=RFRaw[-500:]
-                chRaw=chRaw[-500:]
-                countRaw=countRaw[-500:]
+                RFRaw=RFRaw[-250:]
+                chRaw=chRaw[-250:]
+                countRaw=countRaw[-250:]
                 countCal=countCal[-20:]
-                towMsRaw=towMsRaw[-500:]
+                towMsRaw=towMsRaw[-250:]
                 towMsCal=towMsCal[-20:]
-                towSubMsRaw=towSubMsRaw[-500:]
+                towSubMsRaw=towSubMsRaw[-250:]
                 towSubMsCal=towSubMsCal[-20:]
                 
                 print("Processing GPS request...")
                 print('buffer size ',uart1.any(), 'bytes\n')
-
+                
+                T_req_s = time.ticks_us()
                 timesofinterest= request(w_num, ms, sub_ms)
+                T_req_e = time.ticks_us()
+                proc_time.append(time.ticks_diff(T_req_e, T_req_s))
+                #print("Proc time:", time.ticks_diff(T_req_e, T_req_s))
                 print("4")
                 
                 #print("toi", timesofinterest)
-                print("toi_len", toi_len)
+                #print("toi_len", toi_len)                    
+                
                 if toi_len == 0 or timesofinterest is None:
                     #print("Null")
                     null_count += 1
-                    print('null_count', null_count)
-                    print("ur_count", unreas_count)
-                    print("toi_len", toi_len)
-                    array_count+=1
-                    wdt.feed()
+                    
+                    '''
+                    if ch0_flag == 0 and ch1_flag == 0:
+                        
+                        ch0_null_msg = (99, mac_id, 0, 0, 0, 0, 0, 0, event_num, buf_size)
+                        send_packet_0 = data_packing(send_packet_format, ch0_null_msg)
+                        send_buffer+= send_packet_0
+                        ch1_null_msg = (99, mac_id, 0, 0, 1, 0, 0, 0, event_num, buf_size)
+                        send_packet_1 = data_packing(send_packet_format, ch1_null_msg)
+                        send_buffer+= send_packet_1
+                    
+                        send_data(send_buffer)
+                    '''
+                    #send_buffer = bytearray()
+                    #wdt.feed()
                     pass
                 
                 else:
@@ -914,81 +954,61 @@ while True:
 
                     for i in range(toi_len):
 
-                        count = array_count #timesOfInterest[i][6] #Useless replace with transit time
-
                         data_msg = (99, mac_id, RF[i], cal[i], ch[i], w_num[i], ms[i], sub_ms[i], event_num, buf_size)
 
                         send_packet = data_packing(send_packet_format, data_msg)
                         print("5")
                         
                         send_buffer+= send_packet
-                        print('length send buf:', len(send_buffer))
-                        array_count+=1
+                        #print('length send buf:', len(send_buffer))
+                        if RF[i]==0 and ch[i]==0:
+                            NEventsSent0 +=1
+                            ch0_data_flag = 1
+                        if RF[i]==0 and ch[i]==1:
+                            NEventsSent1 +=1
+                            ch1_data_flag = 1
 
-                        if RF==0:
-                            if ch==0:
-                                NEventsSent0 +=1
-                            if ch==1:
-                                NEventsSent1 +=1
+                                
+                        if ch[i]==0 and ch0_flag == 0:
+                            #print('ch0_event')
+                            ch0_flag = 1
+                                
+                        if ch[i]==1 and ch1_flag == 0:
+                            #print('ch1_event')
+                            ch1_flag = 1
 
-                        #if data:
-                            #array_count+=1
-
-                        #else:
-                        #    print("break from send data")
-                        #    break
-
-                        wdt.feed()
-                        print('buffer size ',uart1.any(), 'bytes\n')
+                        #wdt.feed()
+                        #print('buffer size ',uart1.any(), 'bytes\n')
                         print("6")
+                    
+                    if ch0_flag == 0:
+                        ch0_null_count += 1
+                        #data_msg = (99, mac_id, 0, 0, 0, 0, 0, 0, event_num, buf_size)
+                        #send_packet = data_packing(send_packet_format, data_msg)
+                        #send_buffer+= send_packet
+
+                    if ch1_flag == 0:
+                        ch1_null_count += 1
+                        #data_msg = (99, mac_id, 0, 0, 1, 0, 0, 0, event_num, buf_size)
+                        #send_packet = data_packing(send_packet_format, data_msg)
+                        #send_buffer+= send_packet
+                    
+                    if ch0_data_flag == 1 and ch1_data_flag == 1:
+                        NEventsSentBoth += 1
+
 
                     data = send_data(send_buffer) #Should I start checking wifi and socket are active before sending? It seems kind of pointless,
                     if data: 
                         print("!!!!!!!!!!!!!!!!!!!!!data sent", len(send_buffer) )
                     send_buffer = bytearray()
-
-                R0index=[]
-                R1index=[]
-                #print(RFRaw)
-                #print(chRaw)
-                #print(towMsRaw)
-                #print(len(RFRaw))
-                for i in range(len(RFRaw)):
-                    if RFRaw[i] == 0:
-                        if chRaw[i] == 0 :
-                            R0index.append(i)
-                        elif chRaw[i] ==1:
-                            R1index.append(i)
-                #print('endfor')
-                length0=len(R0index)
-                length1=len(R1index)
-                #print('length', length0,length1, len(towMsRaw))
                 
-                if length0 > 1:
-                    R0indexF=R0index[0]
-                    R0indexL=R0index[-1]
-                    #print(R0index)
-                    #print(R0indexF, R0indexL)
-                    timeElapsed0=(towMsRaw[R0indexL] - towMsRaw[R0indexF])*1000000 + int((towSubMsRaw[R0indexL] - towSubMsRaw[R0indexF])/1000)
-                    #print(timeElapsed0)
-                    NEvents0 += length0-1
-                    deltaT0 += timeElapsed0
-                    #print(NEvents0,deltaT0)
-                if length1 > 1:
-                    R1indexF=R1index[0]
-                    R1indexL=R1index[-1]
-                    #print(R1index)
-                    #print(R1indexF, R1indexL)
-                    #print(R1indexF, R1indexL)
-                    timeElapsed1=(towMsRaw[R1indexL] - towMsRaw[R1indexF])*1000000 + int((towSubMsRaw[R1indexL] - towSubMsRaw[R1indexF])/1000)
-                    #print(timeElapsed1)
-                    NEvents1 += length1-1
-                    deltaT1 += timeElapsed1
-                    #print(NEvents1,deltaT1)
+            
                 T1=time.ticks_us()
                 #print('free mem after for loop2:', gc.mem_free())
             
                 if time.ticks_diff(T1, T0) > 5000000:
+                    
+                    '''
                     #print('NEvents')
                     uart1.write(POLL_NAV_CLOCK)
                     Rate0 = round((NEvents0*1000000000)/(deltaT0+1e-9))
@@ -1005,20 +1025,50 @@ while True:
 
                     rate_packet = data_packing(send_packet_format, rate_msg)
                     rate_data = send_data(rate_packet)
+                    '''
+                    print('NEvents')
+                    uart1.write(POLL_NAV_CLOCK)
+                    wno, Ms, subMs = rtc_to_gps_wno_ms_subms()
+                                        
+                    rate_msg1 = (98, mac_id, NEvents0, NEvents1, deltaT, wno, Ms, subMs, ch0_null_count, ch1_null_count)
+                    rate_packet1 = data_packing(send_packet_format, rate_msg1)
+                    rate_send_buffer+= rate_packet1
 
-                    if rate_data: #If not none
-                        NEvents0=NEvents1=NEventsSent0=NEventsSent1=deltaT0=deltaT1=0
+                    rate_msg2 = (95, mac_id, null_count, unreas_count, 0, 0, 0, 0, 0, 0)
+                    rate_packet2 = data_packing(send_packet_format, rate_msg2)
+                    rate_send_buffer+= rate_packet2
+
+                    statsmsg1 = (96, mac_id, sum(proc_time) // len(proc_time), max(proc_time), sum(loop_time) // len(loop_time), max(loop_time), 0, 0, 0, 0)
+                    statspacket1 = data_packing(send_packet_format, statsmsg1)
+                    rate_send_buffer+= statspacket1
+
+                    statmsg2 = (97, mac_id, sum(transit_time_list) // len(transit_time_list), min(transit_time_list), max(transit_time_list), sum(request_bunching) // len(request_bunching), max(request_bunching), unreas_count, rx_count, 0)
+                    statspacket2 = data_packing(send_packet_format, statmsg2)
+                    rate_send_buffer+= statspacket2
+                    
+                    rate_msg2 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, wno, Ms, subMs, NEventsSentBoth, null_count)
+                    rate_packet2 = data_packing(send_packet_format, rate_msg2)
+                    rate_send_buffer+= rate_packet2
+                    NEvents0=NEvents1=NEventsSent0=NEventsSent1=deltaT=ch0_null_count=ch1_null_count=NEventsSentBoth=rx_count = unreas_count = null_count= 0
+                    loop_time= []
+                    proc_time = []
+                    request_bunching = []
+                    transit_time_list= []
+                    if len(rate_send_buffer)>0: #If not none
+                        send_data(rate_send_buffer)
+                        rate_send_buffer = bytearray()
+
                         T0=T1
-                        null_count=0
-                        unreas_count = 0
-                        wdt.feed()
-                        print('buffer size ',uart1.any(), 'bytes\n')
-                        print("Rate packet sent")
+                        #wdt.feed()
+                        #print('buffer size ',uart1.any(), 'bytes\n')
+                        #print("Rate packet sent")
 
                     else:
                         print("Continued from rate")
                         continue  #Do not break here
-
+            T_loop_e = time.ticks_us()
+            loop_time.append(time.ticks_diff(T_loop_e, T_loop_s))
+            #print("Loop time:", time.ticks_diff(T_loop_e, T_loop_s))
         else:
             continue # Continue main loop if data not recieved
 
