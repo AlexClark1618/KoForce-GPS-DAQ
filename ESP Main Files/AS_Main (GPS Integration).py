@@ -1,9 +1,10 @@
 #Airshower Main
-#Updated- 2/26/26 
+#Updated- 2/27/26
 
 #Changelog
-    #Local rx buffer
-    #More stats
+    #Efficiency roughly increased to 95%
+    #Handles UR better
+    #Improved OTA
 
 import socket
 import ustruct
@@ -20,7 +21,6 @@ from machine import freq
 
 from PPS import init_time, pps_irq, ubx_checksum, ubx_send, ubx_recv, poll_gps_time, discipline_rtc,rtc_to_gps_wno_ms_subms
 
-
 freq(240000000)
 
 #=====================================================================================
@@ -34,7 +34,7 @@ except OSError:
     detector_num = "0"  # default if not yet set
     print("No config.txt found, using default detector number:", detector_num)
 
-version_num = "0.19"
+version_num = "0.20"
 # wdt = None
 t = None
 ota_in_progress = False
@@ -330,11 +330,11 @@ def maxRxBuf(n):
     #print('maxRxBuf')
     try:
         while (uart1.any() > (n )):
-            nskim = uart1.any()-n + 2000
+            nskim = uart1.any()-n + 1000
             print('buffer cleared of ',nskim, 'bytes\n')
             (uart1.read(nskim))
             #time.sleep_ms(1)
-        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[]; towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+        #RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[]; towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
     except Exception as e:
         print('maxRxbuf exception',e)
         error_msg = (100, mac_id, 13, 0, 0, 0, 0, 0, 0, 0)
@@ -437,9 +437,10 @@ def request(wnoToi,MsToi,subMsToi):
         #if ((diff > REQUESTED_TIME_WINDOW) or (diff < -1000000000))  or ((res[0] != wnoToi) and (wnoToi != -1)):
             #print('##################################Unreasonable request', diff//1000000,'ms', res[1], MsToi)
             unreas_count += 1
-            #ur_msg = (96, mac_id, 0, 0, 0, 0, 0, 0, event_num, buf_size) ###
-            #send_packet = data_packing(send_packet_format, ur_msg) ###
-            #send_buffer += send_packet
+            ur_msg = (93, mac_id, towMsCal[0], MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
+            print(ur_msg)
+            send_packet = data_packing(send_packet_format, ur_msg) ###
+            send_data(send_packet) 
 
             #send_data(send_packet) 
             #print(unreas_count)
@@ -716,14 +717,17 @@ def readData(det):
 
     except Exception as e:
         sys.print_exception(e)
-        RFRaw=[]
-        chRaw=[]
-        countRaw=[]
-        countCal=[]
-        towMsRaw=[]
-        towMsCal=[]
-        towSubMsRaw=[]
-        towSubMsCal=[]
+        min_raw_len = min(len(RFRaw), len(chRaw), len(countRaw), len(towMsRaw), len(towSubMsRaw))
+        min_cal_len = min(len(countCal), len(towMsCal), len(towSubMsCal))
+
+        RFRaw=RFRaw[:min_raw_len]
+        chRaw=chRaw[:min_raw_len]
+        countRaw=countRaw[:min_raw_len]
+        countCal=countCal[:min_cal_len]
+        towMsRaw=towMsRaw[:min_raw_len]
+        towMsCal=towMsCal[:min_cal_len]
+        towSubMsRaw=towSubMsRaw[:min_raw_len]
+        towSubMsCal=towSubMsCal[:min_cal_len]
         print("Error in readData:",e)
         error_msg = (100, mac_id, 7, 0, 0, 0, 0, 0, 0, 0)
         packet = data_packing(send_packet_format, error_msg)
@@ -762,32 +766,35 @@ res=None
 
 #initialise Valid, slope  and offset 
 while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
-    print('\ninit while loop', slope, tRaw1, Valid, res)
-    uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
-    for i in range(4):
-        res=readData(1)
-        time.sleep_ms(0)
-        if (res[1] > 0):
-            if (res[3] > 0):
-                Valid = 1
-            else:
-                Valid = 0
-                print("GPS not locked")
-                time.sleep(1)# wait 1 second before trying again
+    try:
+        print('\ninit while loop', slope, tRaw1, Valid, res)
+        uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
+        for i in range(4):
+            res=readData(1)
+            time.sleep_ms(0)
+            if (res[1] > 0):
+                if (res[3] > 0):
+                    Valid = 1
+                else:
+                    Valid = 0
+                    print("GPS not locked")
+                    time.sleep(1)# wait 1 second before trying again
+                    break
+            lastC=len(countCal)-1
+            lastR=len(countRaw)-1
+            #print('countCal',countCal,'countRaw',countRaw)
+        for i in range(lastR,-1,-1):
+            #print('line 569')
+            if countRaw[i]==countCal[lastC]:
+                #print("i:", i)
+                #print("countRaw[i]:", countRaw[i])
+                #print("countCal[lastC]:", countCal[lastC])
+                
+                tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
+                tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
                 break
-        lastC=len(countCal)-1
-        lastR=len(countRaw)-1
-        #print('countCal',countCal,'countRaw',countRaw)
-    for i in range(lastR,-1,-1):
-        #print('line 569')
-        if countRaw[i]==countCal[lastC]:
-            #print("i:", i)
-            #print("countRaw[i]:", countRaw[i])
-            #print("countCal[lastC]:", countCal[lastC])
-            
-            tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
-            tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
-            break
+    except Exception:
+        continue
 
 null_count = 0
 NEventsSent0=0
@@ -826,21 +833,23 @@ transit_time_list= []
 loop_time = []
 proc_time = []
 rx_count = 0
-
+req_diff = 0
+prev_req = 0
 while True:
     #gc.collect()
     receive_buffer = bytearray()
     T_loop_s = time.ticks_us()
     if ota_in_progress:
-        print("OTA in progress: closing gps data socket")
-        try:
-            t.close()
-            while True:
-                wdt.feed()
-                
-        except Exception as e:
-            print("Socket close error:", e)
-        time.sleep(1_000_000)  # effectively idle until reset
+           print("OTA in progress: closing gps data socket")
+           try:
+               s.close() # changed from t.close() during merge with updated OTA code
+               while True:
+                   wdt.feed()
+                   time.sleep_ms(100)
+           except Exception as e:
+               print("Socket close error:", e)
+           time.sleep(1_000_000)  # effectively idle until reset
+
 
     #print("1")
 
@@ -892,6 +901,8 @@ while True:
                 inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, req) #There might be an error here. What if multiple messages came in at the same time and I read them all at the same time? Will they be lost as ustruct may only evaluate the first little bit?
                 #print(event_num)
                 trans_time = timeStamp[1] - ms
+                req_diff = ms -prev_req
+                prev_req = ms
                 print("Trans time:", trans_time)
                 transit_time_list.append(trans_time)
                
@@ -1038,50 +1049,59 @@ while True:
                     rate_packet2 = data_packing(send_packet_format, rate_msg2)
                     rate_send_buffer+= rate_packet2
 
-                    statsmsg1 = (96, mac_id, sum(proc_time) // len(proc_time), max(proc_time), sum(loop_time) // len(loop_time), max(loop_time), 0, 0, 0, 0)
-                    statspacket1 = data_packing(send_packet_format, statsmsg1)
-                    rate_send_buffer+= statspacket1
+                    if len(proc_time)>0 and len(loop_time)>0:
+                        statsmsg1 = (96, mac_id, sum(proc_time) // len(proc_time), max(proc_time), sum(loop_time) // len(loop_time), max(loop_time), 0, 0, 0, 0)
+                        statspacket1 = data_packing(send_packet_format, statsmsg1)
+                        rate_send_buffer+= statspacket1
 
-                    statmsg2 = (97, mac_id, sum(transit_time_list) // len(transit_time_list), min(transit_time_list), max(transit_time_list), sum(request_bunching) // len(request_bunching), max(request_bunching), unreas_count, rx_count, 0)
-                    statspacket2 = data_packing(send_packet_format, statmsg2)
-                    rate_send_buffer+= statspacket2
+                    if len(transit_time_list)>0 and len(request_bunching)>0:
+                        statmsg2 = (97, mac_id, sum(transit_time_list) // len(transit_time_list), min(transit_time_list), max(transit_time_list), sum(request_bunching) // len(request_bunching), max(request_bunching), unreas_count, rx_count, 0)
+                        statspacket2 = data_packing(send_packet_format, statmsg2)
+                        rate_send_buffer+= statspacket2
                     
                     rate_msg2 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, wno, Ms, subMs, NEventsSentBoth, null_count)
                     rate_packet2 = data_packing(send_packet_format, rate_msg2)
                     rate_send_buffer+= rate_packet2
-                    NEvents0=NEvents1=NEventsSent0=NEventsSent1=deltaT=ch0_null_count=ch1_null_count=NEventsSentBoth=rx_count = unreas_count = null_count= 0
+
+                    NEvents0=NEvents1=NEventsSent0=NEventsSent1=deltaT=ch0_null_count=ch1_null_count=NEventsSentBoth= rx_count = unreas_count = null_count= 0
+
                     loop_time= []
                     proc_time = []
                     request_bunching = []
                     transit_time_list= []
+
                     if len(rate_send_buffer)>0: #If not none
                         send_data(rate_send_buffer)
                         rate_send_buffer = bytearray()
 
                         T0=T1
                         #wdt.feed()
-                        #print('buffer size ',uart1.any(), 'bytes\n')
-                        #print("Rate packet sent")
 
                     else:
                         print("Continued from rate")
                         continue  #Do not break here
+
             T_loop_e = time.ticks_us()
             loop_time.append(time.ticks_diff(T_loop_e, T_loop_s))
             #print("Loop time:", time.ticks_diff(T_loop_e, T_loop_s))
+
         else:
             continue # Continue main loop if data not recieved
 
     except Exception as e:
         sys.print_exception(e)
         print("Main loop exception:", e)
+        if ota_in_progress:
+            continue  # Don't try to send on closed socket during OTA
         error_msg = (100, mac_id, 1, 0, 0, 0, 0, 0, 0, 0)
         packet = data_packing(send_packet_format, error_msg)
         send_data(packet)
         continue
 
+# END_OF_FILE
         
         
+
 
 
 
