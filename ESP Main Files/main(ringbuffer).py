@@ -898,6 +898,7 @@ while True:
         time.sleep_ms(0)
        
         if recv_chunk: #I dont think its a good idea to feed on rx
+            wdt.feed()
             print('len of rx buf', recv_chunk)
             recv_bunch = (recv_chunk)//rx_packet_size
             request_bunching.append(recv_bunch)
