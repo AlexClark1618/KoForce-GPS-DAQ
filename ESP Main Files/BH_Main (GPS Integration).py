@@ -1,20 +1,21 @@
 #Borehole
 
-#Updated- 11/13/25 (Alex)
+#Updated- 3/15/25 (Alex)
 
 #Changelog:
-    #General cleanup
-    #More info packets
-    #Improved send function to handle errors
-    #Added timeout for send
+    #Reworked tx buffer to be more memory efficient
 
 import socket
 import ustruct
 import time
 import network
-from machine import UART, Pin, WDT
-import time
+from machine import UART, Pin, WDT, freq, reset
 import gc
+
+from PPS import init_time, pps_irq, ubx_checksum, ubx_send, ubx_recv, poll_gps_time, discipline_rtc,rtc_to_gps_wno_ms_subms
+
+freq(240000000)
+wdt = WDT(timeout=20000)
 
 #---------GPS Functions-----------
 RXM_TM =(2,116)   #b'\x02\x74'
@@ -30,57 +31,138 @@ uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
 
 time.sleep(0.1)
 numMeas=1
-# ---------- Wifi and Socket Stuff ----------
-def con_to_wifi(ssid, password):
-    if wlan.isconnected():
-        wlan.disconnect()
-        time.sleep(0.1)
-    
-    while not wlan.isconnected():
-        try:
-            print("Connecting to Wi-Fi...")
-            wlan.connect(ssid, password)
-            while not wlan.isconnected():
-                time.sleep(1)
-            print("Wi-Fi connected.")
-            return wlan.ifconfig()
-        except OSError as e:
-            print(f"Connection attempt failed: {e}")
-            
-send_packet_format = "!iiiiiiiiii"
+# ---------- Wifi Setup ----------
+#ssid = 'TP-Link_7A54'
+#password = '38694424'
+ssid = 'AirShower2.4G'
+password = 'Air$shower24'
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.config(pm=network.WLAN.PM_NONE)
+wlan.config(pm = 0)
 
-def data_packing(packet_format: str, msg: tuple):
+def con_to_wifi(ssid, password, max_retries = 10):
     try:
-        packet = ustruct.pack(packet_format, 
-            msg[0],#inst,            # char (1 byte)
-            msg[1],#ID,
-            msg[2],#RF,              # char (1 byte)
-            msg[3],#cal,              # uint8 (1 byte)
-            msg[4],#ch,          # uint8 (1 byte)
-            msg[5],#w_num,      	 # uint32 (4 bytes) #Q for 8 byte uint64
-            msg[6],#ms,         # uint32 (4 bytes)
-            msg[7],#sub_ms,
-            msg[8],#event_num                  # uint32 (4 bytes)
-            msg[9] #count
-        )
+        if not wlan.active():
+            wlan.active(True)
+
+        if wlan.isconnected():
+            wlan.disconnect()
+            time.sleep(0.1)
+
+        print("Connecting to Wi-Fi...")
+        wlan.connect(ssid, password)
         
-        return packet
+        retry_count = 0
+        while not wlan.isconnected():
+            if retry_count > max_retries:
+                print("Wi-Fi failed. Restarting device...")
+                time.sleep(1)
+                reset()
+            time.sleep(1)
+            retry_count+=1
+            
+        print("Wi-Fi connected.")
+        wdt.feed()
+        return wlan.ifconfig()
     
-    except Exception:
-        print("Error in data packing")
+    except Exception as e:
+        print("Error during wifi connect:", e)
+
+con_to_wifi(ssid, password)
+
+full_mac = wlan.config('mac')
+mac_id = wlan.config('mac')[-1]  # last byte of MAC
+print("Mac ID:",mac_id)
+ip, subnet, gateway, dns = wlan.ifconfig()
+ip_last_byte = int(ip.split('.')[-1])          
+print("ESP IP:", ip_last_byte)
+
+# ---------- Socket Setup ----------
+# #HOST = '192.168.0.93' #Home
+#HOST = '134.69.200.155'
+HOST = '134.69.77.61' #Karbon Computer
+PORT = 12345
 
 def connect_socket(host, port):
     while True:
         try:
             s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.connect((host, port))
             print("Socket connected.")
             return s
-        except Exception as e:
+        except OSError as e:
             print("Failed to connect socket:", e)
+            try:
+                s.close()
+            except:
+                pass
             time.sleep(1)
 
+s = connect_socket(HOST,PORT)
+s.setblocking(False)
+#s.settimeout(.05) #50ms timeout
+
+# ---------- Send and Recieve Functions ----------
+send_packet_format = "!iiiiiiiiii"
+
+def data_packing(packet_format,v0,v1,v2,v3,v4,v5,v6,v7,v8,v9):
+    try:
+        return ustruct.pack(packet_format,v0,v1,v2,v3,v4,v5,v6,v7,v8,v9)
+    except Exception as e:
+        print("Error in data packing", e)
+        return None
+
+def send_data(d):
+    global s
+    
+    try:
+        return s.send(d)
+        
+    except OSError as e:
+        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+            # No data or connection lost
+            print("No data")
+            
+        else:
+            print("Socket error:", e)
+            try:
+                s.close()
+            except:
+                pass
+
+            time.sleep(0.1)
+            s = connect_socket(HOST, PORT)  # your reconnect function
+            packet = data_packing(send_packet_format, 100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
+            s.send(packet)
+            
+def receive(num_bytes):
+    global s
+    try:
+
+        data = s.recv(num_bytes) 
+
+        if data:
+            print("Wifi RX buffer cleared of:", len(data), "bytes")
+
+    except OSError as e:
+        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
+            # No data or connection lost
+            print("No data to clear")
+            
+        else:
+            print("Socket error:", e)
+            try:
+                s.close()
+                time.sleep(0.1)
+
+            except:
+                pass
+            s = connect_socket(HOST, PORT)  # your reconnect function
+
 # ---------- GPS Functions ----------
+"""
 def clearRxBuf():
     print('clearRxBuf')
     nTry=0
@@ -101,26 +183,57 @@ def clearRxBuf():
         #error_msg = (100, mac_id, 1, 0, 0, 0, 0, 0, 0)
         #packet = data_packing(send_packet_format, error_msg)
         #s.send(packet)
-        pass
-
+        pass"""
+def clearRxBuf():
+    print('clearRxBuf')
+    global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
+    try:
+        #print('clearRxBuf:', uart1.any(),'bytes')
+        while uart1.any():
+            print('buffer cleared of ',uart1.any(), 'bytes\n')
+            (uart1.read())
+        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
+        towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+    except Exception as e:
+        print("Error in clear buffer:", e)
+        #error_msg = (100, mac_id, 4, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, 100, mac_id, 4, 0, 0, 0, 0, 0, 0, 0)
+        send_data(packet)
+'''
 def maxRxBuf(n):
     print("maxRxBuf")
     global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
     nTry = 0
     #print('maxRxBuf')
     try:
-        while (uart1.any() > (n )) and nTry < 4:
+        while (uart1.any() > (n )) or nTry < 4:
             nskim = uart1.any()-n + 1000
             print('buffer cleared of ',nskim, 'bytes\n')
             (uart1.read(nskim))
             nTry += 1
-        RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
-        towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+        #RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
+        #towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
     except Exception as e:
         print('maxRxbuf exception',e)
-        error_msg = (100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
-        packet = data_packing(send_packet_format, error_msg)
+        #error_msg = (100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, 100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
         s.send(packet)
+'''
+def maxRxBuf(n):
+    global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
+    #print('maxRxBuf')
+    try:
+        while (uart1.any() > (n )):
+            nskim = uart1.any()-n + 1000
+            print('buffer cleared of ',nskim, 'bytes\n')
+            (uart1.read(nskim))
+            #time.sleep_ms(1)
+        #RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[]; towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+    except Exception as e:
+        print('maxRxbuf exception',e)
+        #error_msg = (100, mac_id, 5, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format,100, mac_id, 5, 0, 0, 0, 0, 0, 0, 0)
+        send_data(packet)
 
 hdr = bytearray(1)
 def findUBX_HDR():
@@ -145,20 +258,26 @@ def findUBX_HDR():
 
   except Exception as e:
     print("findUBX_HDR error:",e)
-    error_msg = (100, mac_id, 3, 0, 0, 0, 0, 0, 0)
-    packet = data_packing(send_packet_format, error_msg)
+    #error_msg = (100, mac_id, 3, 0, 0, 0, 0, 0, 0)
+    packet = data_packing(send_packet_format, 100, mac_id, 6, 0, 0, 0, 0, 0, 0)
     s.send(packet)
 
 hdr2 = bytearray(4)
 def findHDR2():
-    while uart1.any() < 4:
-        time.sleep_ms(1)
-    uart1.readinto(hdr2)
-    cls  = hdr2[0]
-    msg  = hdr2[1]
-    leni = hdr2[2] | (hdr2[3] << 8)
-#    print('HDR2', cls,msg,leni)
-    return cls, msg, leni
+    try:
+        while uart1.any() < 4:
+            time.sleep_ms(1)
+        uart1.readinto(hdr2)
+        cls  = hdr2[0]
+        msg  = hdr2[1]
+        leni = hdr2[2] | (hdr2[3] << 8)
+    #    print('HDR2', cls,msg,leni)
+        return cls, msg, leni
+    except Exception:
+        print("findUBX_HDR2 error:",e)
+        #error_msg = (100, mac_id, 7, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, 100, mac_id, 7, 0, 0, 0, 0, 0, 0, 0)
+        send_data(packet)
 
 plb = bytearray(2048)
 ck  = bytearray(2)
@@ -328,87 +447,24 @@ def readData():
         return (0, 0, 0, 0, 0)
 
     except Exception as e:
-        print("Error in readData:", e)
-        return (0, 0, 0, 0, 0)
+        #sys.print_exception(e)
+        print("Error in readData:")
+        packet = data_packing(send_packet_format, 100, mac_id, 9, 0, 0, 0, 0, 0, 0, 0)
+        send_data(packet)
+        gc.collect()
+        #return (0, 0, 0, 0, 0) 
 
 
-# ---------- Wi-Fi Setup ---------
-ssid = 'AirShower2.4G'
-password = 'Air$shower24'
-
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-
-con_to_wifi(ssid, password)
-full_mac = wlan.config('mac')
-mac_id = wlan.config('mac')[-1]  # last byte of MAC
-print("Mac ID:",mac_id)
-ip, subnet, gateway, dns = wlan.ifconfig()
-ip_last_byte = int(ip.split('.')[-1])          
-print("ESP IP:", ip_last_byte)
-
-# ---------- Connecting to Server ----------
-#HOST = '192.168.0.93' #Home
-#HOST = '134.69.200.155'
-HOST = '134.69.77.61' #Karbon Computer
-PORT = 12345
-
-s = connect_socket(HOST,PORT)
-#s.settimeout(.1)
-s.setblocking(False)
-
-# ---------- Send and Recieve Functions ----------
-def send_data(d):
-    global s
-    
-    try:
-        return s.send(d)
-        
-
-    except OSError as e:
-        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
-            # No data or connection lost
-            print("No data")
-            
-        else:
-            print("Socket error:", e)
-            try:
-                s.close()
-            except:
-                pass
-            s = connect_socket(HOST, PORT)  # your reconnect function
-            
-def recieve(num_bytes):
-    global s
-    try:
-
-        data = s.recv(num_bytes) 
-
-        if data:
-            print("Wifi RX buffer cleared of:", len(data), "bytes")
-
-    except OSError as e:
-        if e.args[0] in [11, 110]:  # EAGAIN, ETIMEDOUT, ECONNRESET
-            # No data or connection lost
-            print("No data to clear")
-            
-        else:
-            print("Socket error:", e)
-            try:
-                s.close()
-            except:
-                pass
-            s = connect_socket(HOST, PORT)  # your reconnect function
             
 # ---------- Info Packets ----------
-error_msg = (100, mac_id, ip_last_byte, 15, time.ticks_ms(), 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
-packet = data_packing(send_packet_format, error_msg)
+#error_msg = (100, mac_id, ip_last_byte, 15, time.ticks_ms(), 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
+packet = data_packing(send_packet_format, 100, mac_id, ip_last_byte, 12, time.ticks_ms(), 0, 0, 0, 0, 0)
 send_data(packet)
 
 time.sleep(0.1)
 
-info_msg = (1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0) #Info Packet
-packet = data_packing(send_packet_format, info_msg)
+#info_msg = (1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0) #Info Packet
+packet = data_packing(send_packet_format, 1, mac_id, ip_last_byte, 0, 0, 0, 0, 0, 0, 0)
 send_data(packet)
 
 # ---------- Main Loop ----------
@@ -416,45 +472,59 @@ send_data(packet)
 slope=0
 tRaw1=None
 Valid = 0
-RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[];
-towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
+RFRaw=[]; chRaw=[]; countRaw=[]; countCal=[]; towMsRaw=[]; towMsCal=[]; towSubMsRaw=[]; towSubMsCal=[]
 
 while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
-    print('\ninit while loop', slope, tRaw1, Valid)
-    uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
-    for i in range(4):
-        res=readData()
-        if (res[1] > 0):
-            if (res[3] > 0):
-                Valid = 1
-            else:
-                Valid = 0
-                print("GPS not locked")
-                time.sleep(1)# wait 1 second before trying again
+    try:
+        print('\ninit while loop', slope, tRaw1, Valid)
+        uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
+        for i in range(4):
+            res=readData()
+            if (res[1] > 0):
+                if (res[3] > 0):
+                    Valid = 1
+                else:
+                    Valid = 0
+                    print("GPS not locked")
+                    time.sleep(1)# wait 1 second before trying again
+                    break
+            lastC=len(countCal)-1
+            lastR=len(countRaw)-1
+            #print('countCal',countCal,'countRaw',countRaw)
+        for i in range(lastR,-1,-1):
+            #print('line 569')
+            if countRaw[i]==countCal[lastC]:
+                #print("i:", i)
+                #print("countRaw[i]:", countRaw[i])
+                #print("countCal[lastC]:", countCal[lastC])
+                
+                tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
+                tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
                 break
-        lastC=len(countCal)-1
-        lastR=len(countRaw)-1
-        #print('countCal',countCal,'countRaw',countRaw)
-    for i in range(lastR,-1,-1):
-        #print('line 569')
-        if countRaw[i]==countCal[lastC]:
-            #print("i:", i)
-            #print("countRaw[i]:", countRaw[i])
-            #print("countCal[lastC]:", countCal[lastC])
-            
-            tCal1=towMsCal[lastC]*1000000+(towSubMsCal[lastC])
-            tRaw1=towMsRaw[i]*1000000+int(towSubMsRaw[i]/1000)
-            break
+
+    except Exception as e: #I believe this is just due to readData memory allocation
+        #sys.print_exception(e)
+        print("Error in gps initialization")
+        #error_msg = (100, mac_id, 10, 0, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, 100, mac_id, 10, 0, 0, 0, 0, 0, 0, 0)
+        send_data(packet)
+        continue
 
 clearRxBuf()
 
 T0=time.ticks_us()
 event_num = 0 #Keeps track of borehole events (could be moved to server)
+  # 5 seconds
 
-wdt = WDT(timeout=20000)  # 5 seconds
+send_buffer = bytearray(800)
+send_mv = memoryview(send_buffer)
+send_buffer_index = 0
+tx_packet_size = ustruct.calcsize(send_packet_format)
 
-send_buffer = bytearray()
+#init the PPS interrupt
+init_time(uart1)
 
+gc.collect()
 while True:
     try:
         #Checks for wifi disconnections. (May want to move this to an exception handle)
@@ -475,7 +545,9 @@ while True:
 
         while (res[0] == 0) or (res[4] == 1):
             res = readData()
+            time.sleep(0)
             #print('res:', res)
+        timeStamp = rtc_to_gps_wno_ms_subms()
         timeValid = res[3]
         wnoToi=res[0]
         lastC=len(countCal)-1
@@ -516,48 +588,51 @@ while True:
                             #append encoding of interest, use same count as ch0
                             toi.append((RFRaw[j],timeValid,1,wnoToi,Ms,SubMs,countRaw[iRaw], j))        
         
-        ID=mac_id
-        
         for i in range(len(toi)):
             inst = 99           
-            ID = mac_id
             RF = toi[i][0]              
             cal = toi[i][1]               
             ch = toi[i][2]           
             w_num = toi[i][3]   
             ms = toi[i][4]      
             sub_ms = toi[i][5]
-            event_num = event_num 
             count = toi[i][6] 
-
-            msg = (inst, ID, RF, cal, ch, w_num, ms, sub_ms, event_num, count)
             
-            packet = data_packing(send_packet_format, msg)
+            data_msg1 = (99, mac_id, RF[i], cal[i], ch[i], w_num[i], ms[i], sub_ms[i], event_num, count)
 
-            send_buffer+=packet
+            try:
+                ustruct.pack_into(send_packet_format, send_mv, send_buffer_index, *data_msg1)
+                send_buffer_index += tx_packet_size
 
-        try:
-            data = send_data(send_buffer)
-            if data: 
-                print("!!!!!!!!!!!!!!!!!!!!!data sent", len(send_buffer) )
-            send_buffer = bytearray()
-            recieve(1024) #Keeps socket empty
+            except ValueError: #Buffer Over fill
+                print("Send Buffer Overfill")
+                packet = data_packing(send_packet_format, 100, mac_id, 13, 0, 0, 0, 0, 0, 0, 0)
+                send_data(packet)
+                pass #Just try to send what you have
+
+            if (RF==0 and ch==0):
+                #add a stamp stamp if it is a rise on channel 0.
+                data_msg2 = (97, ID, 0, cal, 0, timeStamp[0],timeStamp[1],timeStamp[2],event_num, count)
+                ustruct.pack_into(send_packet_format, send_mv, send_buffer_index, *data_msg2)
+                send_buffer_index += tx_packet_size
+
+        data = send_data(send_mv[:send_buffer_index])
+        if data: 
+            print("!!!!!!!!!!!!!!!!!!!!!data sent", data)
             wdt.feed()
-            event_num +=1 
-        except Exception as e:
-            print("Send error:", e)
-            continue
+
+        send_buffer_index = 0
+        receive(1024) #Keeps socket empty
+        event_num +=1 
 
     except Exception as e:
         print("Error in main loop", e)
-        error_msg = (100, mac_id, ip_last_byte, 14, 0, 0, 0, 0, 0, 0)
-        packet = data_packing(send_packet_format, error_msg)
+        #error_msg = (100, mac_id, ip_last_byte, 14, 0, 0, 0, 0, 0, 0)
+        packet = data_packing(send_packet_format, 100, mac_id, ip_last_byte, 1, 0, 0, 0, 0, 0, 0)
         send_data(packet)
         continue
         
     
-    
 
     
-
 
