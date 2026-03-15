@@ -955,13 +955,11 @@ while True:
                     else:
                         RF,cal,ch,w_num,ms,sub_ms = timesofinterest
                         
-                        print("toi_len:", toi_len)
                         for i in range(toi_len):
 
                             data_msg = (99, mac_id, RF[i], cal[i], ch[i], w_num[i], ms[i], sub_ms[i], event_num, buf_size)
 
                             try:
-                                print("sb inx:", send_buffer_index)
                                 ustruct.pack_into(send_packet_format, send_mv, send_buffer_index, *data_msg)
                                 send_buffer_index += tx_packet_size
                             except ValueError: #Buffer Over fill
