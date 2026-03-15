@@ -1,19 +1,36 @@
 Info Packet: 1
+    info_msg = (1, mac_id, ip_last_byte, int(detector_num), int(version_num), 0, 0, 0, 0, 0)
+
+Stats Codes:
+    stats_msg1 = (98, mac_id, NEvents0, NEvents1, deltaT, wno, Ms, subMs, ch0_null_count, ch1_null_count)
+    stats_msg2 = (97, mac_id, sum(transit_time_list) // len(transit_time_list), min(transit_time_list), max(transit_time_list), sum(request_bunching) // len(request_bunching), max(request_bunching), unreas_count, rx_count, 0)
+    stats_msg3 = (96, mac_id, sum(proc_time) // len(proc_time), max(proc_time), sum(loop_time) // len(loop_time), max(loop_time), 0, 0, 0, 0)
+    stats_msg4 = (95, mac_id, null_count, unreas_count, 0, 0, 0, 0, 0, 0)
+    stats_msg5 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, wno, Ms, subMs, NEventsSentBoth, null_count)
+    ur_msg = (93, mac_id, towMsCal[0], MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
 
 General Data Code Signature: 99
 
 General Error Code Signature : 100
 
-Rate Subsignature = (---, ---, 100, ...)
-Sub-signatures:
-    Error in main loop = 1
-    Send data Error = 2
-    Receive data Error = 3
-    Error in maxRxBuf = 4
-    Error in findUBX_HDR = 5
-    Error in request function = 6
-    Error in readData function = 7
-    Error unpacking = 8
-    Error in send data = 9 #Redundant
-    Error in Rate calc = 10
-    ESP Restart = 11
+    Sub-signatures:
+        Main: 1
+        Send Data: 2
+        Receive Data: 3
+        clearRxBuf: 4
+        maxRxBuf: 5
+        findUBX_HDR : 6
+        findHDR2: 7
+        request: 8
+        readData: 9
+        gps_initialization: 10
+        unpacking: 11
+        esp_restart: 12
+            restart_msg = (100, mac_id, 12, time.ticks_ms(), 0, 0, 0, 0, 0, 0)
+
+Functions with no Error Reports to Server:
+    clear_wifi_rx_buffer
+    con_to_wifi
+    connect_socket
+    reconnect_socket
+    data_packing
