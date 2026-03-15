@@ -343,7 +343,7 @@ def clearRxBuf():
 
 def maxRxBuf(n):
     global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
-    print('maxRxBuf')
+    #print('maxRxBuf')
     try:
         while (uart1.any() > (n )):
             nskim = uart1.any()-n + 1000
@@ -712,7 +712,6 @@ def readData(det):
             )
 
             slope = iclkDrift
-            print('** slope =', slope)
             #print('1 readData free mem:',gc.mem_free())
 
         # Yield once after heavy UART work
@@ -751,7 +750,7 @@ send_data(packet)
 time.sleep(0.1)
 
 #info_msg = (1, mac_id, ip_last_byte, int(detector_num), int(version_num), 0, 0, 0, 0, 0) # This tells me when the board restarted how long it took to reach the main loop since booting
-packet = data_packing(send_packet_format, 1, mac_id, ip_last_byte, int(detector_num), int(version_num), 0, 0, 0, 0, 0)
+packet = data_packing(send_packet_format, 1, mac_id, ip_last_byte, int(detector_num),0, 0, 0, 0, 0, 0)
 send_data(packet)
 
 # ---------- Main Loop ----------
@@ -894,8 +893,8 @@ while True:
        
         if recv_chunk: #I dont think its a good idea to feed on rx
             wdt.feed()
-            print('len of rx buf', recv_chunk)
-            recv_bunch = (recv_chunk)//rx_packet_size
+            #print('len of rx buf', len(recv_chunk))
+            recv_bunch = (len(recv_chunk))//rx_packet_size
             request_bunching.append(recv_bunch)
             
             recv_index = 0
@@ -933,9 +932,6 @@ while True:
                     towMsCal=towMsCal[-20:]
                     towSubMsRaw=towSubMsRaw[-250:]
                     towSubMsCal=towSubMsCal[-20:]
-                    
-                    print("Processing GPS request...")
-                    print('buffer size ',uart1.any(), 'bytes\n')
                     
                     T_req_s = time.ticks_us()
                     timesofinterest= request(w_num, ms, sub_ms)
@@ -990,8 +986,8 @@ while True:
                             NEventsSentBoth += 1
 
                         data = send_data(send_mv[:send_buffer_index]) 
-                        if data: 
-                            print("!!!!!!!!!!!!!!!!!!!!!data sent", data )
+                        #if data: 
+                            #print("!!!!!!!!!!!!!!!!!!!!!data sent", data )
                         send_buffer_index = 0
                 
             T1=time.ticks_us()
@@ -1000,7 +996,7 @@ while True:
 
                 stats_send_buffer_index = 0
 
-                print('NEvents')
+                print('.')
                 uart1.write(POLL_NAV_CLOCK)
                 wno, Ms, subMs = rtc_to_gps_wno_ms_subms()
 
@@ -1058,9 +1054,3 @@ while True:
 # END_OF_FILE
         
         
-
-
-
-
-
-
