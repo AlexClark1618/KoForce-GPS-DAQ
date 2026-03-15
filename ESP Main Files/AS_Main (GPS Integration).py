@@ -1,8 +1,8 @@
 #Airshower Main
-#Updated- 3/6/26 
+#Updated- 3/15/26 
 
 #Changelog
-    #MRedoing wdt
+    #MRedoing wdt feed
     #Reworked con to wifi functon
     #Add gc.collect before main loop
     #Rework error reports
@@ -15,8 +15,6 @@ import socket
 import ustruct
 import time
 import network
-from machine import UART, Pin, WDT, reset, freq
-import gc
 import ota_update
 import _thread
 import sys
@@ -24,8 +22,7 @@ import select
 
 from PPS import init_time,rtc_to_gps_wno_ms_subms #I dont think we need all the extra functions
 
-freq(240000000)
-wdt = WDT(timeout=20000) 
+gc.collect()
 
 #=====================================================================================
 #                                   OTA FUNCTION
@@ -121,28 +118,18 @@ def start_listener():
             cl.send(b"HTTP/1.1 200 OK\r\n\r\nHello from ESP32\n")
         cl.close()
 
-
 #=====================================================================================
 
 
 #---------GPS Variables-----------
 UBX_HDR = b'\xb5\x62' 
-#RXM_TM=b'\x02\x74'
-#TIM_TM2=b'\x0d\x03'
-#NAV_CLOCK=b'\x01\x22'
 RXM_TM =(2,116)   #b'\x02\x74'
 TIM_TM2= (13,3)   #b'\x0d\x03'
 NAV_CLOCK= (1,34)       #b'\x01\x22'
 REQUESTED_TIME_WINDOW = 1000000  #returned times (ns) will be within +/- requested_time_window of time of interested 
 # UBX poll message for NAV-CLOCK (class 0x01, ID 0x22)
 POLL_NAV_CLOCK = b'\xb5\x62\x01\x22\x00\x00\x23\x6a'
-uart1_tx_pin = 12  # Example: GPIO12
-uart1_rx_pin = 14  # Example: GPIO14
-rxbuf = (8192 * 3) # 24kB seems to be the max allowed within the code.
-uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=rxbuf)
 
-time.sleep(0.1)
-#NNC=10
 numMeas=1
 global tcoll0
 tcoll0=0
@@ -279,7 +266,7 @@ def send_data(d):
             s.send(packet)
 
             return None
-'''
+
 def receive(num_bytes, timeout):
     global s
     events = poller.poll(timeout)
@@ -288,7 +275,8 @@ def receive(num_bytes, timeout):
         return None
     
     try:
-        return s.recv(num_bytes)
+        buf = s.recv(num_bytes)
+        return memoryview(buf)
     
     except Exception as e:
         print("Receive error:", e)
@@ -297,31 +285,7 @@ def receive(num_bytes, timeout):
         send_data(packet)
         s = reconnect_socket(s, poller)  
         return None
-'''
-recv_buffer = bytearray(200)
 
-def receive(timeout):
-    '''
-    New rx function reads directly into fixed rx buffer
-    '''
-    global s
-    events = poller.poll(timeout)
-
-    if not events:
-        return None
-
-    try:
-        n = s.readinto(recv_buffer)
-        if n:
-            return recv_buffer[:n]
-        return None
-
-    except Exception as e:
-        print("Receive error:", e)
-        packet = data_packing(send_packet_format, 100, mac_id, 3, 0, 0, 0, 0, 0, 0, 0)
-        send_data(packet)
-        s = reconnect_socket(s, poller)
-        return None
 # ---------- Data Packing -----------
 send_packet_format = "!iiiiiiiiii"
 request_packet_format = '!iiiii'
@@ -347,6 +311,7 @@ def data_packing(packet_format: str, msg: tuple):
         print("Error in data packing", {e})
         #Cant send to server if error need data packing
 '''
+
 def data_packing(packet_format,v0,v1,v2,v3,v4,v5,v6,v7,v8,v9):
     try:
         return ustruct.pack(packet_format,v0,v1,v2,v3,v4,v5,v6,v7,v8,v9)
@@ -447,8 +412,6 @@ toi_SubMs   = [0] * MAX_TOI
 #toi_count   = [0] * MAX_TOI
 
 def request(wnoToi,MsToi,subMsToi):
-    T_r_s = time.ticks_us()
-
     global slope, tcoll0, toi_len, unreas_count
     global RFRaw, chRaw, countRaw, countCal, towMsRaw, towMsCal,towSubMsRaw, towSubMsCal
     try:
@@ -471,9 +434,7 @@ def request(wnoToi,MsToi,subMsToi):
         res=(0,0,0,0)
 
         diff=0
-#        print('free mem before readData',gc.mem_free())
         res=readData(1)        
-#      print('free mem before readData',gc.mem_free())
         while res[1] == 0:
             #print(res)
             res=readData(1)
@@ -549,8 +510,7 @@ def request(wnoToi,MsToi,subMsToi):
                 toi_Ms[toi_len]=Ms
                 toi_SubMs[toi_len]=SubMs
                 toi_len +=1
-        T_r_e = time.ticks_us()
-        #print("Req Time:", time.ticks_diff(T_r_e, T_r_s))
+
         return(toi_RF,toi_valid,toi_ch,toi_wno,toi_Ms,toi_SubMs)
     
     except Exception as e:
@@ -570,9 +530,7 @@ NEvents1 = 0
 #deltaT1 = 0
 deltaT = 0
 
-def readData(det):
-    T_rd_s = time.ticks_us()
-    
+def readData(det):    
     global slope, deltaT, NEvents0, NEvents1
     global RFRaw, chRaw, countRaw
     global countCal, towMsRaw, towMsCal
@@ -716,8 +674,6 @@ def readData(det):
                 #print('6 readData free mem:',gc.mem_free())
 
                 return (wnoR, towMsR, towSubMsR, timeValid)
-            T_rd_e = time.ticks_us()
-            print("RD Time:", time.ticks_diff(T_rd_e, T_rd_s))
             return [
                 (0, 1, ch, wnoR, towMsR, towSubMsR),
                 (1, 1, ch, wnoF, towMsF, towSubMsF)
@@ -873,9 +829,10 @@ global toi_len
 clearRxBuf()
 clear_wifi_rx_buffer()
 
-
 send_buffer = bytearray(640)
+send_mv = memoryview(send_buffer)
 send_buffer_index = 0
+
 stats_send_buffer = bytearray(200)
 stats_send_buffer_index = 0
 
@@ -900,7 +857,6 @@ tx_packet_size = ustruct.calcsize(send_packet_format)
 gc.collect()
 
 while True:
-    #gc.collect()
     T_loop_s = time.ticks_us()
     if ota_in_progress:
            print("OTA in progress: closing gps data socket")
@@ -928,35 +884,32 @@ while True:
             
         maxRxBuf(20000)
         #print('buffer size ',uart1.any(), 'bytes\n')
-        recv_chunk = receive(10)
+        recv_chunk = receive(1024, 10)
 
         time.sleep_ms(0)
        
         if recv_chunk: #I dont think its a good idea to feed on rx
-            print('len of rx buf', len(recv_chunk))
-            recv_bunch = len(recv_chunk)//rx_packet_size
+            print('len of rx buf', recv_chunk)
+            recv_bunch = (recv_chunk)//rx_packet_size
             request_bunching.append(recv_bunch)
             
-            while len(recv_chunk)>=rx_packet_size:
+            recv_index = 0
+
+            while recv_index + rx_packet_size <= len(recv_chunk):
                 rx_count +=1
 
-                recv_packet = recv_chunk[:rx_packet_size]
-                recv_chunk = recv_chunk[rx_packet_size:]
-                
+                recv_packet = recv_chunk[recv_index:recv_index+rx_packet_size]
+                recv_index += rx_packet_size
+
                 ch0_flag = 0
                 ch1_flag = 0
                 ch0_data_flag = 0
                 ch1_data_flag = 0
                 
                 timeStamp=rtc_to_gps_wno_ms_subms()
-                print(timeStamp)
                 try:
                     inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, recv_packet) 
-                    #print(event_num)
                     trans_time = timeStamp[1] - ms
-                    req_diff = ms -prev_req
-                    prev_req = ms
-                    print("Trans time:", trans_time)
                     transit_time_list.append(trans_time)
                 
                 except Exception as e:
@@ -984,10 +937,7 @@ while True:
                     T_req_e = time.ticks_us()
                     proc_time.append(time.ticks_diff(T_req_e, T_req_s))
                     #print("Proc time:", time.ticks_diff(T_req_e, T_req_s))
-                    
-                    #print("toi", timesofinterest)
-                    #print("toi_len", toi_len)                    
-                    
+
                     if toi_len == 0 or timesofinterest is None:
                         null_count += 1
                         pass
@@ -1000,8 +950,9 @@ while True:
                             data_msg = (99, mac_id, RF[i], cal[i], ch[i], w_num[i], ms[i], sub_ms[i], event_num, buf_size)
 
                             try:
-                                ustruct.pack_into(send_packet_format, send_buffer, send_buffer_index, *data_msg)
+                                ustruct.pack_into(send_packet_format, send_mv, send_buffer_index, *data_msg)
                                 send_buffer_index += tx_packet_size
+
                             except ValueError: #Buffer Over fill
                                 print("Send Buffer Overfill")
                                 packet = data_packing(send_packet_format, 100, mac_id, 13, 0, 0, 0, 0, 0, 0, 0)
@@ -1033,9 +984,9 @@ while True:
                         if ch0_data_flag == 1 and ch1_data_flag == 1:
                             NEventsSentBoth += 1
 
-                        data = send_data(send_buffer[:send_buffer_index]) 
+                        data = send_data(send_mv[:send_buffer_index]) 
                         if data: 
-                            print("!!!!!!!!!!!!!!!!!!!!!data sent", len(send_buffer[:send_buffer_index]) )
+                            print("!!!!!!!!!!!!!!!!!!!!!data sent", len(data) )
                         send_buffer_index = 0
                 
             T1=time.ticks_us()
