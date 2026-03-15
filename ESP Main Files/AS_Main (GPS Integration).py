@@ -120,7 +120,6 @@ def start_listener():
 
 #=====================================================================================
 
-
 #---------GPS Variables-----------
 UBX_HDR = b'\xb5\x62' 
 RXM_TM =(2,116)   #b'\x02\x74'
@@ -139,10 +138,13 @@ tcoll0=0
 #password = '38694424'
 ssid = 'AirShower2.4G'
 password = 'Air$shower24'
+
+gc.collect() #Wifi buffers & extras take ~20kB it seems
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
 wlan.config(pm=network.WLAN.PM_NONE)
 wlan.config(pm = 0)
+
 max_retries = 10
 
 def clear_wifi_rx_buffer():
@@ -188,6 +190,7 @@ def con_to_wifi(ssid, password):
             
         print("Wi-Fi connected.")
         wdt.feed()
+        gc.collect()
         return wlan.ifconfig()
     
     except Exception as e:
@@ -215,6 +218,7 @@ def connect_socket(host, port):
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.connect((host, port))
             print("Socket connected.")
+            gc.collect()
             return s
         except Exception as e:
             print("Failed to connect socket:", e)
@@ -261,7 +265,6 @@ def send_data(d):
             print("Send error:", e)
             #error_msg = (100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
             s = reconnect_socket(s, poller)  
-
             packet = data_packing(send_packet_format, 100, mac_id, 2, 0, 0, 0, 0, 0, 0, 0)
             s.send(packet)
 
@@ -778,7 +781,7 @@ res=None
 
 while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
     try:
-        print('\ninit while loop', slope, tRaw1, Valid, res)
+        #print('\ninit while loop', slope, tRaw1, Valid, res)
         uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
         for i in range(4):
             res=readData(1)
@@ -834,6 +837,7 @@ send_mv = memoryview(send_buffer)
 send_buffer_index = 0
 
 stats_send_buffer = bytearray(200)
+send_stats_mv = memoryview(stats_send_buffer)
 stats_send_buffer_index = 0
 
 buf_size = 0
@@ -889,6 +893,7 @@ while True:
         time.sleep_ms(0)
        
         if recv_chunk: #I dont think its a good idea to feed on rx
+            wdt.feed()
             print('len of rx buf', recv_chunk)
             recv_bunch = (recv_chunk)//rx_packet_size
             request_bunching.append(recv_bunch)
@@ -1029,11 +1034,10 @@ while True:
                 request_bunching = []
                 transit_time_list= []
 
-                if len(stats_send_buffer)>0: #If not none
-                    send_data(stats_send_buffer[:stats_send_buffer_index])
-                    wdt.feed()
-
+                if len(send_stats_mv)>0: #If not none
+                    send_data(send_stats_mv[:stats_send_buffer_index])
                     T0=T1
+                stats_send_buffer_index = 0
                     
             T_loop_e = time.ticks_us()
             loop_time.append(time.ticks_diff(T_loop_e, T_loop_s))
