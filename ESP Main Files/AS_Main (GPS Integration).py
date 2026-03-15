@@ -991,7 +991,7 @@ while True:
 
                         data = send_data(send_mv[:send_buffer_index]) 
                         if data: 
-                            print("!!!!!!!!!!!!!!!!!!!!!data sent", len(data) )
+                            print("!!!!!!!!!!!!!!!!!!!!!data sent", data )
                         send_buffer_index = 0
                 
             T1=time.ticks_us()
