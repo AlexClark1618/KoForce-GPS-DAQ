@@ -123,7 +123,6 @@ def start_listener():
 
 #=====================================================================================
 
-
 #---------GPS Variables-----------
 UBX_HDR = b'\xb5\x62' 
 RXM_TM =(2,116)   #b'\x02\x74'
@@ -298,7 +297,6 @@ def receive(num_bytes, timeout):
         s = reconnect_socket(s, poller)  
         return None
 
-
 # ---------- Data Packing -----------
 send_packet_format = "!iiiiiiiiii"
 request_packet_format = '!iiiii'
@@ -449,10 +447,6 @@ def request(wnoToi,MsToi,subMsToi):
         oldestMsCal=rb_cal_ms.get_oldest()
         if ((MsToi < oldestMsCal)) or ((res[0] != wnoToi) and (wnoToi != -1)):
             #print('##################################Unreasonable request', "Cal:", towMsCal[0], "PPS:", Ms, "Toi:", MsToi)
-            #print(res[0])
-            #print(wnoToi)
-            #print(oldestMsCal)
-            #print(MsToi)
             print("Unreasonable Request")
             unreas_count += 1
             #ur_msg = (93, mac_id, towMsCal[0], MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
@@ -550,12 +544,13 @@ def readData(det):
         # Find UBX sync
         n=findUBX_HDR()
         if n>2:
-            print("findUBX",n)
+            pass
+            #print("findUBX",n)
         #print('1 readData free mem:',gc.mem_free())
 
         cls, msg, leni = findHDR2()
         if leni > 2048:
-            print("leni >2048" )
+            #print("leni >2048" )
             return (0, 0, 0, 0)
 
         # Wait cooperatively for payload + checksum
@@ -564,7 +559,8 @@ def readData(det):
         while uart1.any() < needed:
             i=i+1
             if (i-i//1000*1000) == 0:
-                print('readData',end='.')
+                pass
+                #print('readData',end='.')
             time.sleep_ms(1)
 
         # Read payload + checksum without allocating
@@ -626,7 +622,8 @@ def readData(det):
                 dtMs=towMs-oldtowMs
                 if (dtMs)>75:
                     #countdtMs += 1
-                    print ("count, towMs, oldtowMs, dt", count, towMs, oldtowMs,dtMs)
+                    #print ("count, towMs, oldtowMs, dt", count, towMs, oldtowMs,dtMs)
+                    pass
                 oldtowMs=towMs
 
                 push_all_raw(rf=RF, ch=ch, wno=wno, ms=towMs, sub=towSubMs, count=count)
@@ -687,8 +684,9 @@ def readData(det):
                 #print('TIM-TM',count)
                 dtMs=towMsR-oldtowMsR
                 if (dtMs)>75:
+                    pass
                     #countdtMs += 1
-                    print ("count, toMsR, oldtowMsR, dt", count, towMsR, oldtowMsR,dtMs)
+                    #print ("count, toMsR, oldtowMsR, dt", count, towMsR, oldtowMsR,dtMs)
                 oldtowMsR=towMsR
                 push_all_cal(wno= wnoR, ms= towMsR, sub= towSubMsR, count = count)
 
@@ -792,7 +790,7 @@ countdtMs = 0
 
 while ((slope == 0) or (tRaw1 == None) or (Valid == 0)):
     try:
-        print('\ninit while loop', slope, tRaw1, Valid, res)
+        #print('\ninit while loop', slope, tRaw1, Valid, res)
         uart1.write(POLL_NAV_CLOCK) #Poll Nav Clock
         for i in range(4):
             res=readData(1)
