@@ -428,22 +428,17 @@ toi_SubMs     = array.array("I", bytearray(MAX_TOI))
 def request(wnoToi,MsToi,subMsToi):
     global slope, toi_len, tRaw1, tCal1, t,tIdx, unreas_count
     try:
-        #print('100')
         res=(0,0,0,0)
         #if (wnoToi == -1):
           #New request
         #print('request(-1,0,0) called')
         while (res[0] == 0):
-            #print('res[0] ==0')
             res=readData(1)
-            #print('readData(1)')
-        #print("res[0]", res[0])
-        #MsToi = res[1]+MsToi
-        #subMsToi = res[2]
-          #print('end if')
+
         resToi=MsToi*1000000+subMsToi
 
         #wno, Ms, subMs = rtc_to_gps_wno_ms_subms()
+        '''
         oldestMsCal=rb_cal_ms.get_oldest()
         if ((MsToi < oldestMsCal)) or ((res[0] != wnoToi) and (wnoToi != -1)):
             #print('##################################Unreasonable request', "Cal:", towMsCal[0], "PPS:", Ms, "Toi:", MsToi)
@@ -453,7 +448,7 @@ def request(wnoToi,MsToi,subMsToi):
             #print(ur_msg)
             send_packet = data_packing(send_packet_format, 93, mac_id, 0, MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
             send_data(send_packet) 
-
+        '''
         diff=0
         while (diff < REQUESTED_TIME_WINDOW):  # | (bytehdr2 == RXM_TM): #Exceed the time of interest by at least 1 ms and capture an extra RXM data packet    
             res=readData(1)
@@ -461,64 +456,78 @@ def request(wnoToi,MsToi,subMsToi):
             if res[1] > 0:
                 diff=(res[1]-MsToi)*1000000+(res[2]-subMsToi)
             
-            '''
-            if res[0] != 0:
-                if (diff > REQUESTED_TIME_WINDOW) or (abs(diff) > 1000000000) or ((res[0] != wnoToi) and (wnoToi != -1)) :
-                    print('##################################Unreasonable request', diff//1000000,'ms', res[1], MsToi)
-                    unreas_count += 1
-                    print(unreas_count)
-            '''
-
         timeValid = res[3]
+        calIdx=-1
         for i in range(cal_count[0]):
             rbCal = rb_cal_ms.get(i)
             if rbCal < MsToi:
                 if i > 0:
                     calIdx=i-1   #Cal index near toi 
                 break
-
         #find index where rawcount = calcount
         #print(calIdx)
+        if (calIdx == -1):
+            print("No cal in buffer")
+            send_packet = data_packing(send_packet_format, 93, mac_id, 0, MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
+            send_data(send_packet) 
+            return(toi_RF,toi_valid,toi_ch,toi_wno,toi_Ms,toi_SubMs)
+
+        rawIdx=-1
         CCoI = rb_cal_count.get(calIdx)
-        rawIdx=0
-        for i in range(raw_count[0]):
+        for i in range(raw_count[0]):            
             RC = rb_raw_count.get(i)
             if RC == 0:
                 continue
             if RC < CCoI:
+                rawIdx = i
                 break
             if RC == CCoI:  # matching raw count found
                 tCal1 = rb_cal_ms.get(calIdx)*1000000 + rb_cal_sub.get(calIdx)
                 tRaw1 = rb_raw_ms.get(i)*1000000 + rb_raw_sub.get(i)//1000
                 rawIdx = i
+                #print('cal',rb_cal_ms.get(calIdx),rb_cal_sub.get(calIdx),rb_raw_ms.get(i),rb_raw_sub.get(i))
                 break
 
         toi_len=0
-        rawIdx=rawIdx-40  #starts about 50ms before toi
-        rawIdx = max(rawIdx,0)
+        
+        if (rawIdx == -1):
+            print("Unreasonable request")
+            send_packet = data_packing(send_packet_format, 93, mac_id, 0, MsToi, gc.mem_free(), buf_size, trans_time, req_diff, event_num, 0) ###
+            send_data(send_packet) 
+            return(toi_RF,toi_valid,toi_ch,toi_wno,toi_Ms,toi_SubMs)
+
+#Calibrate raw data and select time near toi    
+#         rfoi=[]; tvoi=[]; choi=[]; wnoi=[]; msoi=[]; submsoi=[]; countoi=[]
+        #rawIdx=rawIdx-60  #starts about 50ms before toi
+        #rawIdx = max(rawIdx,0)
 
         #print(slope)
         #calibrate and select toi
-        for i in range(rawIdx, raw_count[0]):
+        
+        for i in range(max(rawIdx-60,0), min(rawIdx+60, raw_count[0] )):
+            #if (i == max(rawIdx - 60,0)):
+                #print("rawIdx, raw_count, MsToi",rawIdx, raw_count[0], MsToi)
             tRaw=rb_raw_ms.get(i)*1000000+ rb_raw_sub.get(i)//1000
             #print(tRaw1)
             dtRaw=tRaw-tRaw1
             res=dtRaw-dtRaw*slope//1000000000 + tCal1
             diff = res - resToi
-#            print("tRaw, dtRaw, res, resToi, diff", tRaw, dtRaw, res, resToi, diff)
+            #if (i == max(rawIdx+1 - 60,0)):
+#                print("rawIdx, raw_count, MsToi",rawIdx, raw_count[0], MsToi)
+#                print("tRaw, dtRaw, res, resToi, diff", tRaw, dtRaw, res, resToi, diff)
             if diff < (-REQUESTED_TIME_WINDOW):
                 # Reached t < toi
                 break
-            diff = abs(diff)
-            if diff < REQUESTED_TIME_WINDOW:
+            if abs(diff) < REQUESTED_TIME_WINDOW:
                 toi_RF[toi_len]=rb_raw_rf.get(i)
                 toi_valid[toi_len]=timeValid
                 toi_ch[toi_len]=rb_raw_ch.get(i)
                 toi_wno[toi_len]=rb_raw_wno.get(i)
                 toi_Ms[toi_len]=res//1000000
                 toi_SubMs[toi_len]=res-toi_Ms[toi_len]*1000000
+#        if (toi_RF[toi_len]==0):
+#                print('subMsToi, toi_SubMs',subMsToi, toi_SubMs[toi_len],slope)
                 toi_len +=1
-
         return(toi_RF,toi_valid,toi_ch,toi_wno,toi_Ms,toi_SubMs)
     
     except Exception as e:
