@@ -3,7 +3,10 @@
 
 #Changelog
     #Ringbuffer
+import micropython
+
 gc.collect()
+#micropython.mem_info()
 
 from ringBuffer import RingBuffer, push_all_cal, push_all_raw
 from ringBuffer import rb_cal_count, rb_cal_wno, rb_cal_ms, rb_cal_sub
@@ -12,6 +15,7 @@ from ringBuffer import CAPACITY_RAW, CAPACITY_CAL, raw_write_idx, cal_write_idx,
 
 gc.collect()
 
+import micropython
 import socket
 import network
 import ustruct
@@ -21,10 +25,10 @@ import ota_update
 import _thread
 import sys
 import select
+from PPS import init_time,rtc_to_gps_wno_ms_subms #I dont think we need all the extra functions
 
 gc.collect()
 
-#from PPS import init_time,rtc_to_gps_wno_ms_subms #I dont think we need all the extra functions
 
 #=====================================================================================
 #                                   OTA FUNCTION
@@ -858,7 +862,7 @@ unreas_count = 0
 ch0_null_count= 0
 ch1_null_count= 0
 
-#init_time(uart1)
+init_time(uart1)
 
 request_bunching = []
 transit_time_list= []
@@ -872,7 +876,8 @@ rx_packet_size =  ustruct.calcsize(request_packet_format)
 tx_packet_size = ustruct.calcsize(send_packet_format)
 
 gc.collect() #Free memory
-
+#micropython.mem_info()
+#time.sleep(10)
 while True:
     #gc.collect()
     T_loop_s = time.ticks_us()
@@ -908,8 +913,8 @@ while True:
        
         if recv_chunk: #I dont think its a good idea to feed on rx
             wdt.feed()
-            print('len of rx buf', recv_chunk)
-            recv_bunch = (recv_chunk)//rx_packet_size
+            #print('len of rx buf', len(recv_chunk))
+            recv_bunch = (len(recv_chunk))//rx_packet_size
             request_bunching.append(recv_bunch)
             
             recv_index = 0
@@ -926,13 +931,14 @@ while True:
                 ch0_data_flag = 0
                 ch1_data_flag = 0
                 
-                timeStamp=0#rtc_to_gps_wno_ms_subms()
+                timeStamp=rtc_to_gps_wno_ms_subms()
                 try:
-                    inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, recv_packet) 
+                    inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, recv_packet)
                     #print(event_num)
-                    trans_time = timeStamp - ms
-                    req_diff = ms -prev_req
-                    prev_req = ms
+                    trans_time = timeStamp[1] - ms
+                    #print('Transit time:', trans_time)
+                    #req_diff = ms -prev_req
+                    #prev_req = ms
                     transit_time_list.append(trans_time)
                 
                 except Exception as e:
@@ -1003,17 +1009,17 @@ while True:
 
                         data = send_data(send_mv[:send_buffer_index]) 
                         if data: 
-                            print("!!!!!!!!!!!!!!!!!!!!!data sent", data)
+                            pass#print("!!!!!!!!!!!!!!!!!!!!!data sent", data)
                         send_buffer_index = 0
                 
                 T1=time.ticks_us()
             
                 if time.ticks_diff(T1, T0) > 5000000:
-
+                    print('.')
                     uart1.write(POLL_NAV_CLOCK)
-                    wno=Ms=subMs =0 #rtc_to_gps_wno_ms_subms()
+                    lwno, lMs,lsubMs = rtc_to_gps_wno_ms_subms()
 
-                    stats_msg1 = (98, mac_id, NEvents0, NEvents1, deltaT, wno, Ms, subMs, ch0_null_count, ch1_null_count)
+                    stats_msg1 = (98, mac_id, NEvents0, NEvents1, deltaT, lwno, lMs, lsubMs, ch0_null_count, ch1_null_count)
                     ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg1)
                     stats_send_buffer_index += tx_packet_size
 
@@ -1031,7 +1037,7 @@ while True:
                     ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg4)
                     stats_send_buffer_index += tx_packet_size
                     
-                    stats_msg5 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, wno, Ms, subMs, NEventsSentBoth, null_count)
+                    stats_msg5 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, lwno, lMs, lsubMs, NEventsSentBoth, null_count)
                     ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg5)
                     stats_send_buffer_index += tx_packet_size
 
@@ -1067,10 +1073,3 @@ while True:
 # END_OF_FILE
         
         
-
-
-
-
-
-
-
