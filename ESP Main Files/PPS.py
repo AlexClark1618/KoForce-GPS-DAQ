@@ -653,3 +653,5 @@ if __name__ == "__main__":
         uart = init_time()
         run_minimal_with_verification(uart)
 
+version_num = "0.01"
+# END_OF_FILE_PPS
