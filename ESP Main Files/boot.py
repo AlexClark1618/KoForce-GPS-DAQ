@@ -24,8 +24,8 @@ wdt = WDT(timeout=20000)
 
 uart1_tx_pin = 12  # Example: GPIO12
 uart1_rx_pin = 14  # Example: GPIO14
-rxbuf=8192*3
+rxbuf=8192 * 3
 uart1 = UART(1, baudrate=115200*4, tx=Pin(uart1_tx_pin), rx=Pin(uart1_rx_pin), rxbuf=rxbuf)
 
-
-
+version_num = "0.01"
+# END_OF_FILE_BOOT
