@@ -97,7 +97,7 @@ rb_cal_ms    = RingBuffer('I', CAPACITY_CAL, cal_write_idx,  cal_count)
 rb_cal_sub   = RingBuffer('I', CAPACITY_CAL, cal_write_idx,  cal_count)
 rb_cal_wno   = RingBuffer('H', CAPACITY_CAL, cal_write_idx,  cal_count)
 gc.collect()
-print("free mem8", gc.mem_free())
+#print("free mem8", gc.mem_free())
 
 
 
@@ -146,3 +146,5 @@ def push_all_cal(wno: int, ms: int, sub: int, count: int):
     if cal_count[0] < CAPACITY_CAL:
         cal_count[0] += 1
 
+version_num = "0.01"
+# END_OF_FILE_RINGBUFFER
