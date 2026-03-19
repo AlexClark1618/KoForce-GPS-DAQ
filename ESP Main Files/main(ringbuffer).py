@@ -1,8 +1,6 @@
 #Airshower Main
-#Updated- 3/15/26
+#Updated- 3/19/26
 
-#Changelog
-    #Ringbuffer
 import micropython
 
 gc.collect()
@@ -39,7 +37,7 @@ except OSError:
     detector_num = "0"  # default if not yet set
     print("No config.txt found, using default detector number:", detector_num)
 
-version_num = "0.29"
+version_num = "0.30"
 # wdt = None
 t = None
 ota_listener.version_num = version_num
@@ -344,6 +342,7 @@ def request(wnoToi,MsToi,subMsToi):
     try:
         #print('100')
         res=(0,0,0,0)
+        '''
         if (wnoToi == -1):
           #New request
           #print('request(-1,0,0) called')
@@ -355,14 +354,10 @@ def request(wnoToi,MsToi,subMsToi):
           MsToi = res[1]+MsToi
           subMsToi = res[2]
           #print('end if')
+        '''
         while (res[0] == 0):
-            #print('res[0] ==0')
             res=readData(1)
-            #print('readData(1)')
-        #print("res[0]", res[0])
-        #MsToi = res[1]+MsToi
-        #subMsToi = res[2]
-          #print('end if')
+
         resToi=MsToi*1000000+subMsToi
 
         #wno, Ms, subMs = rtc_to_gps_wno_ms_subms()
@@ -384,13 +379,11 @@ def request(wnoToi,MsToi,subMsToi):
                 diff=(res[1]-MsToi)*1000000+(res[2]-subMsToi)
             
         timeValid = res[3]
-        calIdx=-1
         for i in range(cal_count[0]):
             rbCal = rb_cal_ms.get(i)
             if rbCal < MsToi:
-                calIdx = i
                 if i > 0:
-                    calIdx=i-1   #Cal index near toi
+                    calIdx=i-1   #Cal index near toi 
                 break
 
         #find index where rawcount = calcount
@@ -833,7 +826,7 @@ while True:
                 ch0_data_flag = 0
                 ch1_data_flag = 0
                 
-                #timeStamp=rtc_to_gps_wno_ms_subms()
+                timeStamp=0#rtc_to_gps_wno_ms_subms()
                 try:
                     inst, w_num, ms, sub_ms, event_num = ustruct.unpack(request_packet_format, recv_packet) 
                     #print(event_num)
@@ -841,7 +834,7 @@ while True:
                     req_diff = ms -prev_req
                     prev_req = ms
                     
-                    transit_time = 0#timeStamp[1] - ms
+                    transit_time = timeStamp[1] - ms
                     if transit_time > transit_time_max:
                         transit_time_max = transit_time
                     transit_time_avg+=transit_time
@@ -859,7 +852,7 @@ while True:
                     #print('buffer size ',uart1.any(), 'bytes\n')
                     
                     T_req_s = time.ticks_us()
-                    timesofinterest= request(-1, 100, 0)
+                    timesofinterest= request(w_num, ms, sub_ms)
                     T_req_e = time.ticks_us()
                     
                     proc_time = (time.ticks_diff(T_req_e, T_req_s))//1000
@@ -924,13 +917,13 @@ while True:
                     stats_send_buffer_index = 0
                     print('.')
                     uart1.write(POLL_NAV_CLOCK)
-                    wno = Ms = subMs = 0#rtc_to_gps_wno_ms_subms()
+                    wno= Ms= subMs = 0#rtc_to_gps_wno_ms_subms()
 
                     try:
                         stats_msg1 = (98, mac_id, NEvents0, NEvents1, deltaT, wno, Ms, subMs, ch0_null_count, ch1_null_count)
                         ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg1)
                         stats_send_buffer_index += tx_packet_size
-                        
+                       
                         if rx_count>0 and recv_chunk_count>0:
                             stats_msg2 = (97, mac_id, transit_time_avg//rx_count, transit_time_max, request_bunching_avg//recv_chunk_count, request_bunching_max, unreas_count, rx_count, 0, 0)
                             ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg2)
@@ -943,7 +936,7 @@ while True:
                         stats_msg4 = (95, mac_id, null_count, unreas_count, 0, 0, 0, 0, 0, 0)
                         ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg4)
                         stats_send_buffer_index += tx_packet_size
-                        
+                       
                         stats_msg5 = (94, mac_id, NEventsSent0, NEventsSent1, deltaT, wno, Ms, subMs, NEventsSentBoth, null_count)
                         ustruct.pack_into(send_packet_format, send_stats_mv, stats_send_buffer_index, *stats_msg5)
                         stats_send_buffer_index += tx_packet_size
@@ -967,8 +960,8 @@ while True:
                     proc_time_max = 0
                     if len(send_stats_mv)>0: #If not none
                         send_data(send_stats_mv[:stats_send_buffer_index])
-                    T0=T1
-
+                        T0=T1
+                    
                 T_loop_e = time.ticks_us()
                 loop_time = (time.ticks_diff(T_loop_e, T_loop_s))//1000
                 
